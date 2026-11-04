@@ -1,0 +1,51 @@
+name: Publish installer to the edge release
+
+# Like a rolling "latest" for the installer: every change to it on main replaces the file on the
+# `edge` release, so the unreleased version can always be fetched from
+#   https://github.com/ip-ping/ipping-node/releases/download/edge/ipping-node.sh
+# `edge` is a prerelease, so it never becomes GitHub's "latest": the stable link
+#   https://github.com/ip-ping/ipping-node/releases/latest/download/ipping-node.sh
+# always serves the installer of the newest tagged release.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ipping-node.sh
+      - .github/workflows/edge.yml
+  workflow_dispatch:
+
+# Runs replace the same release files, so never let two overlap.
+concurrency:
+  group: edge-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  edge:
+    name: Update the edge release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck (never publish a script that fails it)
+        run: shellcheck ipping-node.sh
+      - name: Replace the files on the edge release
+        run: |
+          set -eu
+          notes="Rolling build of the installer from main, updated on every change. Not a stable release: unless you need something unreleased, use the newest tagged release instead (releases/latest/download)."
+          if gh release view edge >/dev/null 2>&1; then
+            # Keep the tag on the commit the files came from.
+            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/edge" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh release create edge --prerelease --target "$GITHUB_SHA" --title "Edge (main)" --notes "$notes"
+          fi
+          gh release upload edge ipping-node.sh --clobber

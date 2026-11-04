@@ -592,7 +592,20 @@ cmd_install() {
   esac
 }
 
+elevate_if_needed() {
+  # Started as a normal user (the usual "download and run" one-liner)? Run again through sudo,
+  # keeping the same arguments. Help text needs no privileges.
+  [ "$(id -u)" -eq 0 ] && return 0
+  local arg
+  for arg in "$@"; do case "$arg" in -h | --help) return 0 ;; esac; done
+  if ! command_exists sudo; then die "This needs root and sudo is not installed. Run it as root."; fi
+  if [ ! -f "$0" ]; then die "Save the script to a file and run it from there (it has to start itself again with sudo)."; fi
+  info "Root is needed; running again with sudo."
+  exec sudo --preserve-env bash "$0" "$@"
+}
+
 main() {
+  elevate_if_needed "$@"
   local command=""
   TOKEN="${IPPING_NODE_ENROLL_TOKEN:-}"
   SERVER="${IPPING_NODE_SERVER:-}"

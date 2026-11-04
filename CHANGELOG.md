@@ -4,6 +4,13 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: release tags and published installers
+- Same release flow as the application (tag or manual run, dry run, `Cargo.toml` version check,
+  `main`-only publishing, re-runnable); a release now attaches the binaries, `ipping-node.sh` and
+  `SHA256SUMS`.
+- `edge.yml` keeps a rolling `edge` prerelease with the current `ipping-node.sh` from `main`.
+- `ipping-node.sh` starts itself again through sudo when run as a normal user.
+
 ### 2026-11-04: installer lint fixes
 - Fixed what the newest ShellCheck (the one on CI runners) reports: `A && B || C` chains, and a
   `grep -q` inside a pipeline under `pipefail`, which could end the "wait until the node has

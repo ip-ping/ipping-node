@@ -17,9 +17,16 @@ copies of its example frames and the tests fail if this crate drifts from them.
 
 ## Install on a host
 
-```bash
-curl -fsSLO https://github.com/ip-ping/ipping-node/releases/latest/download/ipping-node.sh
+Download the installer from the newest release and run it (it asks for sudo itself, and shows a
+menu when given no arguments):
 
+```bash
+curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/ip-ping/ipping-node/releases/latest/download/ipping-node.sh -o ipping-node.sh && chmod +x ipping-node.sh && bash ipping-node.sh
+```
+
+Or run it non-interactively:
+
+```bash
 # Direct: a systemd service, no Docker, no Rust. Downloads one named release and verifies it
 # against that release's SHA256SUMS before installing.
 sudo bash ipping-node.sh install --mode direct --server https://ping.example.com --token ipt_...
@@ -30,6 +37,9 @@ sudo bash ipping-node.sh install --mode docker --server https://ping.example.com
 sudo bash ipping-node.sh status | logs | doctor | restart | update | uninstall
 ```
 
+That link always serves the installer of the newest tagged release; the unreleased one from `main` is
+at `https://github.com/ip-ping/ipping-node/releases/download/edge/ipping-node.sh`. Releases are
+cut as described in [RELEASING.md](https://github.com/ip-ping/ipping/blob/main/RELEASING.md).
 Run it without arguments for an interactive menu. Installs are repeatable (a second run keeps the
 node's identity), updates keep the previous release for rollback and roll back by themselves if the
 new one does not start, and `uninstall` keeps the node's identity unless you add `--purge`.
@@ -106,7 +116,8 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] Backend connection with reconnect/backoff, enrollment, CLI
 - [x] End-to-end run against the real backend (local: enroll, approve, ping 1.1.1.1)
 - [x] Docker image and Docker Hub publishing (distroless, non-root, amd64 + arm64)
-- [ ] Release binaries (linux amd64 / arm64) and checksums
+- [x] Release workflow: binaries (linux amd64 / arm64), checksums, installer; rolling `edge` installer
+- [ ] First tagged release (see RELEASING.md)
 - [x] `ipping-node.sh` installer (direct and Docker modes; tested in clean containers, see CHANGELOG)
 - [ ] TCP, HTTP and traceroute probes
 
