@@ -134,6 +134,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write      # sign the attestations
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -151,6 +153,13 @@ jobs:
           set -eu
           sha256sum -- ipping-node-linux-* ipping-node.sh > SHA256SUMS
           cat SHA256SUMS
+      - name: Attest where the files came from
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ipping-node-linux-*
+            ipping-node.sh
       - name: Publish the release
         if: needs.prepare.outputs.publish == 'true'
         run: |

@@ -4,6 +4,18 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: verification and hardening
+- Run for real under systemd 255 (a container with systemd as PID 1): the published v0.1.0 installers
+  bring up PostgreSQL, backend, frontend, Caddy and a node, a measurement completes through the
+  sandboxed node, systemd restarts a killed node, all services are enabled for boot, and uninstall
+  removes the units.
+- Units tightened (clock, hostname, /proc, SUID, IPC, native syscalls only, private umask, no
+  capabilities unless needed, a syscall filter on the node). `systemd-analyze security` exposure:
+  node 5.8 -> 1.5, backend 3.5, frontend 3.5, Caddy 5.0 (it must bind low ports).
+- The `CAP_NET_RAW` fallback was exercised: with unprivileged ping disabled on the host the node's unit
+  keeps exactly that one capability and still measures (raw sockets).
+- Release files get signed build-provenance attestations (`gh attestation verify`); takes effect with the next release.
+
 ### 2026-11-04: IPv6 and systemd verification
 - Live ICMPv6 loopback test (macOS and Linux): the probe gets real replies over IPv6; capability
   detection reports `ipv6: false` on hosts with no public IPv6 route. A public IPv6 destination could

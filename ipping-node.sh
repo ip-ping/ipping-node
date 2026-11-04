@@ -289,7 +289,7 @@ service_group_can_ping() {
 }
 
 write_unit_file() {
-  local caps="" insecure_env=""
+  local caps=$'CapabilityBoundingSet=' insecure_env=""
   [ "$ALLOW_INSECURE" -eq 0 ] || insecure_env="Environment=IPPING_NODE_ALLOW_INSECURE=1"
   if service_group_can_ping; then
     info "unprivileged ping sockets are allowed for this user; no extra capability needed"
@@ -327,6 +327,16 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RemoveIPC=true
+SystemCallArchitectures=native
+UMask=0077
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 ReadWritePaths=${STATE_DIR}
 
 [Install]
