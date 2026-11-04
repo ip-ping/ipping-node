@@ -95,7 +95,7 @@ detect_arch() {
 }
 
 installed_mode() {
-  [ -f "$MODE_FILE" ] && cat "$MODE_FILE" || true
+  if [ -f "$MODE_FILE" ]; then cat "$MODE_FILE"; fi
 }
 
 require_mode() {
@@ -268,9 +268,10 @@ install_docker_mode() {
   if [ "$existing" = "no" ]; then
     # The token is single-use and the node now holds its own credential in the state volume, so
     # it does not need to stay on disk.
-    local waited=0
+    local waited=0 logs
     while [ "$waited" -lt 30 ]; do
-      compose logs --no-color 2>/dev/null | grep -q 'connected' && break
+      logs="$(compose logs --no-color 2>/dev/null || true)"
+      case "$logs" in *connected*) break ;; esac
       sleep 1; waited=$((waited + 1))
     done
     sed -i 's/^IPPING_NODE_ENROLL_TOKEN=.*/IPPING_NODE_ENROLL_TOKEN=/' "${APP_DIR}/.env"
@@ -527,7 +528,7 @@ cmd_uninstall() {
   rm -f "$MODE_FILE"
   if [ "$PURGE" -eq 1 ]; then
     rm -rf "$STATE_DIR" "$APP_DIR"
-    id "$RUN_USER" >/dev/null 2>&1 && userdel "$RUN_USER" 2>/dev/null || true
+    if id "$RUN_USER" >/dev/null 2>&1; then userdel "$RUN_USER" 2>/dev/null || true; fi
     ok "Removed, including the node's credential."
   else
     ok "Removed. The node's identity (${STATE_DIR} / the state volume) was kept so reinstalling reuses it; add --purge to delete it."
