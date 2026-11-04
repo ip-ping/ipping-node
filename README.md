@@ -15,6 +15,29 @@ Nodes dial out over a TLS WebSocket, so a node host needs **no inbound port**. T
 is defined by the backend (`contracts/node-protocol-v1.schema.json`); `tests/fixtures/` holds
 copies of its example frames and the tests fail if this crate drifts from them.
 
+## Run it
+
+```bash
+cargo build --release
+
+# One-time: trade an enrollment token (admin page) for this node's own credential.
+ipping-node --state-dir ~/.ipping-node enroll --server https://ping.example.com --token ipt_... \
+    --name "Falkenstein 1" --country DE --city Falkenstein
+
+# An administrator approves the node in the admin page, then:
+ipping-node --state-dir ~/.ipping-node run
+```
+
+The state directory (default `/var/lib/ipping-node`) holds `node.json` and `credential`, both
+mode `0600`. The credential is shown once at enrollment and is sent only in an `Authorization`
+header; a plain `http://` backend is refused unless it is on this machine. `IPPING_NODE_LOG`
+sets the log filter (default `info`). Every option can also be given as an `IPPING_NODE_*`
+environment variable, and `run` will enroll by itself when `IPPING_NODE_SERVER` and
+`IPPING_NODE_ENROLL_TOKEN` are set and no credential exists yet (convenient for containers).
+
+ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that means
+`net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`.
+
 ## Develop
 
 ```bash
@@ -41,8 +64,8 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] Protocol types, checked against the backend's example frames
 - [x] Destination policy (public addresses only)
 - [x] ICMP ping probe and task runner
-- [ ] Backend connection with reconnect/backoff, enrollment, CLI
-- [ ] End-to-end run against the real backend
+- [x] Backend connection with reconnect/backoff, enrollment, CLI
+- [x] End-to-end run against the real backend (local: enroll, approve, ping 1.1.1.1)
 - [ ] Docker image and Docker Hub publishing
 - [ ] Release binaries (linux amd64 / arm64) and checksums
 - [ ] `ipping-node.sh` installer (direct and Docker modes)

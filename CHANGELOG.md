@@ -4,6 +4,16 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: backend connection, enrollment and CLI
+- `ipping-node enroll` / `run`: state directory with private permissions, credential sent only in
+  an `Authorization` header, plain-`http://` backends refused unless local.
+- Connection loop: hello/welcome handshake with protocol negotiation, heartbeat, reconnect with
+  jittered exponential backoff, local concurrency cap (`node_busy`), bounded outbound buffer,
+  cancellation of running tasks when the connection ends, clean shutdown on SIGINT/SIGTERM.
+- Capabilities re-detected on every connect.
+- Verified end to end against the real backend: enroll with a single-use token, approval, live
+  pings of a public IP and of a pasted URL, loopback refused, node goes offline when stopped.
+
 ### 2026-11-04: ICMP probe and task runner
 - `Prober` trait with an ICMP implementation (`surge-ping`): unprivileged ping sockets first, raw
   sockets as fallback; fixed 56-byte payload; monotonic round-trip timing.
