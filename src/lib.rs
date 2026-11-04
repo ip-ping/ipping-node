@@ -4,4 +4,7 @@
 //! structured results. It never executes commands it is sent.
 
 pub mod policy;
+pub mod probes;
 pub mod protocol;
+pub mod resolve;
+pub mod runner;
