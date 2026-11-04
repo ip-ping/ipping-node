@@ -1,0 +1,20 @@
+[package]
+name = "ipping-node"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Measurement node for ipping: runs bounded network probes on behalf of the backend"
+license = "MIT"
+repository = "https://github.com/ip-ping/ipping-node"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["serde-well-known", "parsing", "formatting"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

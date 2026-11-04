@@ -1,0 +1,12 @@
+{
+  "type": "welcome",
+  "protocol_version": 1,
+  "node_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "node_status": "approved",
+  "server_time": "2026-11-04T12:00:00Z",
+  "heartbeat_interval_s": 15,
+  "limits": {
+    "max_concurrent_tasks": 8,
+    "max_count": 10
+  }
+}

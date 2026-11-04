@@ -1,0 +1,14 @@
+{
+  "type": "hello",
+  "protocol_versions": [
+    1
+  ],
+  "node_version": "0.1.0",
+  "capabilities": {
+    "kinds": [
+      "ping"
+    ],
+    "ipv4": true,
+    "ipv6": true
+  }
+}

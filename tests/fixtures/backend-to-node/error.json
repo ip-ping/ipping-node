@@ -1,0 +1,5 @@
+{
+  "type": "error",
+  "code": "unsupported_protocol",
+  "message": "Backend supports protocol versions [1]."
+}
