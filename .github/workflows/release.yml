@@ -83,5 +83,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ github.ref_name }}" ipping-node-linux-* SHA256SUMS --generate-notes \
-            $(case "${{ github.ref_name }}" in *-*) echo --prerelease;; esac)
+          args=(--generate-notes)
+          case "${GITHUB_REF_NAME}" in *-*) args+=(--prerelease) ;; esac
+          gh release create "${GITHUB_REF_NAME}" ipping-node-linux-* SHA256SUMS "${args[@]}"

@@ -4,6 +4,9 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: release workflow cleanup
+- Prerelease flag in `release.yml` no longer relies on shell word splitting; actionlint clean.
+
 ### 2026-11-04: installer (`ipping-node.sh`)
 - Direct mode: unprivileged service account, 0700 state directory, hardened systemd unit
   (`ProtectSystem=strict`, no new privileges, `CAP_NET_RAW` only when unprivileged ping is not
