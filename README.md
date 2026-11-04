@@ -39,7 +39,7 @@ cargo fmt --all
 Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 
 - [x] Protocol types, checked against the backend's example frames
-- [ ] Destination policy (public addresses only)
+- [x] Destination policy (public addresses only)
 - [ ] ICMP ping probe and task runner
 - [ ] Backend connection with reconnect/backoff, enrollment, CLI
 - [ ] End-to-end run against the real backend
