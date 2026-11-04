@@ -149,7 +149,6 @@ jobs:
       - name: Checksums
         run: |
           set -eu
-          cp ipping-node.sh .
           sha256sum -- ipping-node-linux-* ipping-node.sh > SHA256SUMS
           cat SHA256SUMS
       - name: Publish the release
