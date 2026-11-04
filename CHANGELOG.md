@@ -4,6 +4,19 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: Docker image and publishing
+- `Dockerfile`: cross-compiles on the build machine (no emulated compiling), builds on Debian 11 for
+  a low glibc requirement, ships in `distroless/cc` as uid 65532; a `binary` target extracts the
+  plain executable for releases. 11 MB.
+- `compose.yaml` + `.env.example` for a node-only host: all capabilities dropped, read-only
+  filesystem, state in a named volume.
+- Workflows: `ci.yml` (fmt, clippy, tests, two-architecture image build), `docker.yml` (publish
+  `latest` + commit SHA on pushes to `main`, like `file-node`), `release.yml` (tag -> versioned image,
+  linux binaries, `SHA256SUMS`, GitHub release). Actions pinned to commit SHAs.
+- Verified with the real backend: a container with `--cap-drop ALL --read-only` enrolls itself from
+  environment variables, pings through an unprivileged socket, and keeps its identity across restarts.
+- Logs are plain text unless stderr is a terminal.
+
 ### 2026-11-04: backend connection, enrollment and CLI
 - `ipping-node enroll` / `run`: state directory with private permissions, credential sent only in
   an `Authorization` header, plain-`http://` backends refused unless local.

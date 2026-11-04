@@ -38,6 +38,20 @@ environment variable, and `run` will enroll by itself when `IPPING_NODE_SERVER` 
 ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that means
 `net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`.
 
+## Docker
+
+```bash
+cp .env.example .env     # set IPPING_NODE_SERVER and IPPING_NODE_ENROLL_TOKEN
+docker compose up -d
+```
+
+The image (`tonyliuzj/ipping-node`) is built by GitHub Actions on every push to `main`
+(`latest` and the commit SHA, `linux/amd64` + `linux/arm64`). It is distroless, runs as an
+unprivileged user and needs **no** `--privileged`, no `CAP_NET_RAW` and no Docker socket:
+`compose.yaml` drops every capability, makes the filesystem read-only and only sets the
+`net.ipv4.ping_group_range` sysctl that unprivileged ICMP needs. The default Docker bridge has no
+IPv6, so such a node reports IPv4 only; use host or an IPv6-enabled network to measure IPv6.
+
 ## Develop
 
 ```bash
@@ -66,7 +80,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] ICMP ping probe and task runner
 - [x] Backend connection with reconnect/backoff, enrollment, CLI
 - [x] End-to-end run against the real backend (local: enroll, approve, ping 1.1.1.1)
-- [ ] Docker image and Docker Hub publishing
+- [x] Docker image and Docker Hub publishing (distroless, non-root, amd64 + arm64)
 - [ ] Release binaries (linux amd64 / arm64) and checksums
 - [ ] `ipping-node.sh` installer (direct and Docker modes)
 - [ ] TCP, HTTP and traceroute probes

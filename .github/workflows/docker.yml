@@ -1,0 +1,59 @@
+name: Publish Docker image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Nothing here needs to write to the repository; Docker Hub is reached with its own secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, clippy and tests
+    uses: ./.github/workflows/ci.yml
+
+  docker:
+    name: Build and push to Docker Hub
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Set the org variable DOCKERHUB_NAMESPACE if the Docker Hub namespace differs from
+          # the login name.
+          tags: |
+            ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}/ipping-node:latest
+            ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}/ipping-node:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

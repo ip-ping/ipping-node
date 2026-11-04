@@ -1,0 +1,23 @@
+# Runs only the measurement node: no frontend, backend or database belongs on a node host.
+services:
+  ipping-node:
+    image: ${IPPING_NODE_IMAGE:-tonyliuzj/ipping-node:latest}
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ipping-node-state:/var/lib/ipping-node
+    # ICMP echo through an unprivileged ping socket: no --privileged, no CAP_NET_RAW, no Docker
+    # socket. Docker's default already allows this; it is spelled out so it is not lost.
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    # IPv6 probes need IPv6 connectivity inside the container. The default bridge network has
+    # none, so the node then reports IPv4 only. Use `network_mode: host` or an IPv6-enabled
+    # network if this host should also measure over IPv6.
+
+volumes:
+  ipping-node-state:

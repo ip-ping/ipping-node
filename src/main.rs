@@ -226,6 +226,7 @@ async fn main() -> ExitCode {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
 
     let state = StateDir::new(cli.state_dir);
