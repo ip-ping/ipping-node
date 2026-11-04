@@ -18,6 +18,8 @@ copies of its example frames and the tests fail if this crate drifts from them.
 ## Install on a host
 
 ```bash
+curl -fsSLO https://github.com/ip-ping/ipping-node/releases/latest/download/ipping-node.sh
+
 # Direct: a systemd service, no Docker, no Rust. Downloads one named release and verifies it
 # against that release's SHA256SUMS before installing.
 sudo bash ipping-node.sh install --mode direct --server https://ping.example.com --token ipt_...

@@ -4,6 +4,9 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: installer ships with releases
+- Releases now attach `ipping-node.sh`, so it can be fetched from `releases/latest/download/`.
+
 ### 2026-11-04: release workflow cleanup
 - Prerelease flag in `release.yml` no longer relies on shell word splitting; actionlint clean.
 
