@@ -117,7 +117,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] End-to-end run against the real backend (local: enroll, approve, ping 1.1.1.1)
 - [x] Docker image and Docker Hub publishing (distroless, non-root, amd64 + arm64)
 - [x] Release workflow: binaries (linux amd64 / arm64), checksums, installer; rolling `edge` installer
-- [ ] First tagged release (see RELEASING.md)
+- [x] First tagged release: v0.1.0
 - [x] `ipping-node.sh` installer (direct and Docker modes; tested in clean containers, see CHANGELOG)
 - [ ] TCP, HTTP and traceroute probes
 

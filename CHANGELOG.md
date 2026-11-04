@@ -4,6 +4,10 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.1.0 (2026-11-04)
+
+First release. Everything below shipped in it.
+
 ### 2026-11-04: release tags and published installers
 - Same release flow as the application (tag or manual run, dry run, `Cargo.toml` version check,
   `main`-only publishing, re-runnable); a release now attaches the binaries, `ipping-node.sh` and
