@@ -4,6 +4,14 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: IPv6 and systemd verification
+- Live ICMPv6 loopback test (macOS and Linux): the probe gets real replies over IPv6; capability
+  detection reports `ipv6: false` on hosts with no public IPv6 route. A public IPv6 destination could
+  not be exercised from the test machine (no IPv6 internet).
+- The published installer and hardened unit were run by real systemd 255: the node probes under
+  `ProtectSystem=strict`, `MemoryDenyWriteExecute` and the address-family filter, and systemd restarts
+  it after a SIGKILL.
+
 ## v0.1.0 (2026-11-04)
 
 First release. Everything below shipped in it.

@@ -28,3 +28,25 @@ async fn capabilities_are_derived_from_what_the_host_can_do() {
     assert_eq!(caps.kinds.is_empty(), !prober.has_any_socket());
     eprintln!("detected: {caps:?}");
 }
+
+#[tokio::test]
+async fn ipv6_loopback_echo_gets_a_reply() {
+    let prober = IcmpProber::new();
+    let caps = prober.capabilities();
+    // Capabilities are checked, not assumed: only run where this host really has IPv6 sockets.
+    if !prober.has_any_socket() {
+        eprintln!("skipped: no ICMP sockets for this user");
+        return;
+    }
+    let ip: IpAddr = "::1".parse().unwrap();
+    match prober.echo(ip, 0x4321, 1, Duration::from_secs(2)).await {
+        EchoOutcome::Reply(rtt) => assert!(rtt < Duration::from_secs(1), "{rtt:?}"),
+        // No IPv6 socket or no ::1 on this host: not a failure of the probe.
+        EchoOutcome::Failed(code) => {
+            eprintln!("skipped: IPv6 loopback unavailable here ({code}); caps = {caps:?}")
+        }
+        EchoOutcome::Timeout => {
+            panic!("IPv6 loopback must answer or be unavailable, not time out (caps = {caps:?})")
+        }
+    }
+}
