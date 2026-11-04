@@ -98,6 +98,11 @@ struct OptionalEnroll {
     asn: Option<u32>,
 }
 
+/// An empty value (`IPPING_NODE_COUNTRY=` in an .env file) means "not set", not "set to nothing".
+fn set(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
 fn default_name() -> String {
     std::env::var("HOSTNAME")
         .ok()
@@ -113,14 +118,14 @@ fn default_name() -> String {
 
 async fn do_enroll(state: &StateDir, args: EnrollArgs) -> Result<(), String> {
     let details = Details {
-        name: args.name.unwrap_or_else(default_name),
+        name: set(args.name).unwrap_or_else(default_name),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        country: args.country,
-        region: args.region,
-        city: args.city,
+        country: set(args.country),
+        region: set(args.region),
+        city: set(args.city),
         latitude: args.latitude,
         longitude: args.longitude,
-        provider: args.provider,
+        provider: set(args.provider),
         asn: args.asn,
     };
     let server = args.server.trim().trim_end_matches('/').to_owned();
@@ -159,7 +164,9 @@ async fn do_run(state: StateDir, args: RunArgs) -> Result<(), String> {
         .load()
         .map_err(|e| format!("cannot read {}: {e}", state.path().display()))?;
     if loaded.is_none() {
-        let (Some(token), Some(server)) = (args.enroll.token.clone(), args.server.clone()) else {
+        let (Some(token), Some(server)) =
+            (set(args.enroll.token.clone()), set(args.server.clone()))
+        else {
             return Err(format!(
                 "this node is not enrolled yet. Run `ipping-node enroll --server <url> --token <token>`, \
                  or set IPPING_NODE_SERVER and IPPING_NODE_ENROLL_TOKEN. (state dir: {})",
@@ -187,7 +194,7 @@ async fn do_run(state: StateDir, args: RunArgs) -> Result<(), String> {
     }
     let loaded = loaded.ok_or("enrollment did not produce a credential")?;
     let settings = Settings {
-        server: args.server.unwrap_or(loaded.identity.server),
+        server: set(args.server).unwrap_or(loaded.identity.server),
         credential: loaded.credential,
         max_concurrent_tasks: args.max_tasks,
     };

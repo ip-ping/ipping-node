@@ -4,6 +4,23 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-04: installer (`ipping-node.sh`)
+- Direct mode: unprivileged service account, 0700 state directory, hardened systemd unit
+  (`ProtectSystem=strict`, no new privileges, `CAP_NET_RAW` only when unprivileged ping is not
+  permitted), release binary verified against `SHA256SUMS` (a mismatch installs nothing), enrollment
+  token passed through the environment so it never appears in `ps` or on disk.
+- Docker mode: Docker installed from its apt repository only if missing; hardened compose project,
+  `.env` mode 0600, used token cleared once the node has connected.
+- `install`, `update` (previous release kept, automatic rollback), `start`/`stop`/`restart`,
+  `status`, `logs`, `doctor`, `uninstall` (`--purge` to also delete the identity), interactive menu,
+  `--allow-insecure` opt-in for plain-HTTP backends.
+- The CLI treats empty `IPPING_NODE_*` values as unset (an empty country in an `.env` file used to
+  be sent to the backend and refused).
+- Tested in clean containers against the real backend: bad checksum refused, install, idempotent
+  re-run, update, uninstall, purge, in both modes. `systemctl` was shimmed in the direct-mode test
+  because containers have no systemd, so the unit file's contents were checked but not run by systemd.
+- ShellCheck runs in CI.
+
 ### 2026-11-04: Docker image and publishing
 - `Dockerfile`: cross-compiles on the build machine (no emulated compiling), builds on Debian 11 for
   a low glibc requirement, ships in `distroless/cc` as uid 65532; a `binary` target extracts the

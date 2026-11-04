@@ -15,6 +15,29 @@ Nodes dial out over a TLS WebSocket, so a node host needs **no inbound port**. T
 is defined by the backend (`contracts/node-protocol-v1.schema.json`); `tests/fixtures/` holds
 copies of its example frames and the tests fail if this crate drifts from them.
 
+## Install on a host
+
+```bash
+# Direct: a systemd service, no Docker, no Rust. Downloads one named release and verifies it
+# against that release's SHA256SUMS before installing.
+sudo bash ipping-node.sh install --mode direct --server https://ping.example.com --token ipt_...
+
+# Docker: the same node in a hardened container.
+sudo bash ipping-node.sh install --mode docker --server https://ping.example.com --token ipt_...
+
+sudo bash ipping-node.sh status | logs | doctor | restart | update | uninstall
+```
+
+Run it without arguments for an interactive menu. Installs are repeatable (a second run keeps the
+node's identity), updates keep the previous release for rollback and roll back by themselves if the
+new one does not start, and `uninstall` keeps the node's identity unless you add `--purge`.
+`--allow-insecure` is needed to connect to a plain `http://` backend on another host (the default
+central install serves HTTP until you give it a domain); the credential then travels unencrypted.
+
+Direct mode runs as an unprivileged `ipping-node` user under a locked-down systemd unit. It
+checks `net.ipv4.ping_group_range`; only if the user cannot send unprivileged pings does the unit
+get `CAP_NET_RAW`, and nothing else.
+
 ## Run it
 
 ```bash
@@ -82,7 +105,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] End-to-end run against the real backend (local: enroll, approve, ping 1.1.1.1)
 - [x] Docker image and Docker Hub publishing (distroless, non-root, amd64 + arm64)
 - [ ] Release binaries (linux amd64 / arm64) and checksums
-- [ ] `ipping-node.sh` installer (direct and Docker modes)
+- [x] `ipping-node.sh` installer (direct and Docker modes; tested in clean containers, see CHANGELOG)
 - [ ] TCP, HTTP and traceroute probes
 
 ## License
