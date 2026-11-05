@@ -4,6 +4,8 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.2.0 (2026-11-05)
+
 ### 2026-11-04: verification and hardening
 - Run for real under systemd 255 (a container with systemd as PID 1): the published v0.1.0 installers
   bring up PostgreSQL, backend, frontend, Caddy and a node, a measurement completes through the
