@@ -455,9 +455,33 @@ wait_for_node_log() { # wait_for_node_log TEXT SECONDS
   return 1
 }
 
-# What the node says about itself, in words.
+# Does the site know this node as approved? Its public node list only holds approved nodes, so
+# being in it means approved, and "online" says whether the node is connected right now. This
+# matters because a node approved while it is already connected says nothing in its own log.
+# Prints online, offline, absent (not listed: pending or revoked) or unknown (could not ask).
+site_node_state() {
+  local id server body rest
+  id="$(node_id)"; server="$(node_server)"
+  if [ -z "$id" ] || [ -z "$server" ]; then echo unknown; return; fi
+  body="$(curl -fsS --max-time 5 "${server%/}/api/v1/nodes" 2>/dev/null)" || { echo unknown; return; }
+  body="${body//[[:space:]]/}"
+  case "$body" in
+    *"\"id\":\"$id\""*)
+      rest="${body#*\"id\":\""$id"\"}"
+      case "${rest%%\}*}" in *'"online":true'*) echo online ;; *) echo offline ;; esac
+      ;;
+    *'"id":'*|"[]") echo absent ;;
+    *) echo unknown ;;
+  esac
+}
+
+# What the node says about itself, in words: what the site says if it can be asked, else the log.
 node_approval() {
   local last
+  case "$(site_node_state)" in
+    online) echo "approved and connected"; return ;;
+    offline) echo "approved, not connected right now"; return ;;
+  esac
   last="$(node_recent_log | grep -E 'approved; ready for tasks|waiting for an administrator|refused this node|session ended' | tail -n 1 || true)"
   case "$last" in
     *"approved; ready"*) echo "approved, ready for work" ;;

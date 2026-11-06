@@ -4,6 +4,27 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.3.1 (2026-11-06)
+
+Two things found by installing the real v0.3.0 releases on a fresh Debian 13 machine and updating
+them.
+
+### fix: a node stayed away for a minute after every backend update
+- While the backend restarts, the proxy in front of it answers HTTP 502. The node read *any* HTTP
+  answer to its connection as "the backend refused this node's credential" and waited the full minute
+  before trying again, so every update of the site left its nodes offline for about 63 seconds with a
+  misleading message in the log. Now only 401 and 403 mean a refused credential; anything else
+  (502, 503, 504, 429, 500) is "the site answered HTTP N; it is probably restarting" and the node
+  retries at the normal pace (about a second, then longer). Tested against a fake backend: a 502, 503
+  or 504 is retried within 2.6 s, a 401 or 403 is not retried.
+- Seen for real: after `ipping.sh update` the node was back after 63 s; it should be about 1 s.
+
+### fix: `status` kept saying "waiting for an administrator" after approval
+- A node approved while it is already connected logs nothing new, so the installer's status, doctor
+  and summary (which read the node's log) went on saying it was waiting. They now ask the site: its
+  public node list only holds approved nodes, so being in it means approved, and its `online` flag
+  says whether the node is connected. If the site cannot be asked the log is used as before.
+
 ## v0.3.0 (2026-11-06)
 
 TCP, HTTP and traceroute checks, a port allowlist, and an installer fixed for Debian 13 with a guided

@@ -53,6 +53,10 @@ enum SessionError {
         "the backend refused this node's credential (HTTP {0}); it may have been revoked or rotated"
     )]
     Rejected(u16),
+    /// The proxy in front of the backend answered with an error, as it does while the backend
+    /// restarts. Not a verdict on the credential, so no long wait.
+    #[error("the site answered HTTP {0}; it is probably restarting")]
+    Unavailable(u16),
     #[error("connection failed: {0}")]
     Connect(String),
     #[error("protocol error: {0}")]
@@ -61,6 +65,17 @@ enum SessionError {
     Closed,
     #[error("no data from the backend for too long")]
     Silent,
+}
+
+/// What an HTTP answer to the WebSocket upgrade means. Only 401 and 403 say the credential is
+/// wrong; a 502 or 503 is the proxy saying the backend is not there right now, which is what every
+/// backend update looks like, and waiting a minute over it would keep the node away for no reason.
+fn refusal(status: u16) -> SessionError {
+    if matches!(status, 401 | 403) {
+        SessionError::Rejected(status)
+    } else {
+        SessionError::Unavailable(status)
+    }
 }
 
 /// Run until `shutdown` is cancelled, reconnecting as needed.
@@ -131,7 +146,7 @@ async fn session(
         match tokio_tungstenite::connect_async_with_config(request, Some(config), false).await {
             Ok(connected) => connected,
             Err(tungstenite::Error::Http(response)) => {
-                return Err(SessionError::Rejected(response.status().as_u16()));
+                return Err(refusal(response.status().as_u16()));
             }
             Err(error) => return Err(SessionError::Connect(error.to_string())),
         };
@@ -285,4 +300,22 @@ async fn session(
     // Whatever ends the session, stop work for a backend that is no longer listening.
     session_token.cancel();
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_refused_credential_is_treated_as_one() {
+        for status in [401, 403] {
+            assert!(matches!(refusal(status), SessionError::Rejected(s) if s == status));
+        }
+        for status in [404, 429, 500, 502, 503, 504] {
+            assert!(
+                matches!(refusal(status), SessionError::Unavailable(s) if s == status),
+                "{status}"
+            );
+        }
+    }
 }

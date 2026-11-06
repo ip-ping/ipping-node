@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test doubles that the sourced script calls; shellcheck cannot see that
 # Tests for the installer's own logic (no root, no network, nothing installed).
 #   bash tests/installer.sh
 set -u
@@ -19,6 +20,31 @@ check "no output other than ours, no exit" "sourced" "$out"
 # shellcheck source=/dev/null
 . "$SCRIPT"
 set +e +u +o pipefail
+
+echo "approval is read from the site, not only from the node's log"
+node_id() { echo "abc123"; }
+node_server() { echo "https://ping.example.com/"; }
+installed_mode() { echo direct; }
+node_recent_log() { printf '%s\n' "INFO connected" "WARN waiting for an administrator to approve this node"; }
+FAKE_BODY=""; FAKE_FAIL=0
+curl() { [ "$FAKE_FAIL" = 0 ] || return 22; printf '%s' "$FAKE_BODY"; }
+FAKE_BODY='[{"id":"zzz","name":"other","online":true},{"id":"abc123","name":"mine","country":"NL","online":true,"ipv4":true}]'
+check "listed and online" online "$(site_node_state)"
+check "...says so even though its log still says it is waiting" "approved and connected" "$(node_approval)"
+FAKE_BODY='[{"id":"abc123","name":"mine","online": false,"ipv4":true}]'
+check "listed but offline (spaces in the JSON)" offline "$(site_node_state)"
+check "...is approved, not connected" "approved, not connected right now" "$(node_approval)"
+FAKE_BODY='[{"id":"zzz","name":"other","online":true}]'
+check "not listed" absent "$(site_node_state)"
+check "...falls back to the log: still waiting" "waiting for an administrator to approve it" "$(node_approval)"
+FAKE_BODY='[]'
+check "an empty list is not listed either" absent "$(site_node_state)"
+FAKE_BODY='<html>502 Bad Gateway</html>'
+check "an answer that is not the node list is unknown" unknown "$(site_node_state)"
+FAKE_FAIL=1
+check "an unreachable site is unknown" unknown "$(site_node_state)"
+check "...and the log is all there is" "waiting for an administrator to approve it" "$(node_approval)"
+unset -f curl node_id node_server installed_mode node_recent_log
 
 echo "os-release is read without touching the script's own variables"
 VERSION="v0.2.0"; NAME="my node"; MODE="docker"
