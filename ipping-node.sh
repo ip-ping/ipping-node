@@ -968,8 +968,8 @@ menu() {
     case "$choice" in q | Q | quit | exit | "") exit 0 ;; esac
     if [[ $choice =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#keys[@]}" ]; then
       case "${keys[choice - 1]}" in
-        install_direct) ( MODE=direct; cmd_install ) || true ;;
-        install_docker) ( MODE=docker; cmd_install ) || true ;;
+        install_direct) MODE=direct; ( cmd_install ) || true; MODE="" ;;
+        install_docker) MODE=docker; ( cmd_install ) || true; MODE="" ;;
         status) ( cmd_status ) || true ;;
         doctor) ( cmd_doctor ) || true ;;
         logs) ( cmd_logs ) || true ;;

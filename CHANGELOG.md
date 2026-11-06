@@ -4,6 +4,13 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: fix: CI had been failing on a lint note in the installer
+- The latest ShellCheck (stricter than the version used while developing) flagged the menu's
+  `( MODE=...; cmd_install )` as a variable modified in a subshell. The mode is now set before the
+  subshell and cleared after it. This had kept the Docker image and the `edge` installer from being
+  published since the guided-installer commit; both are published again now. The local check now
+  uses the same ShellCheck image as CI (`koalaman/shellcheck:stable -S style`).
+
 ### 2026-11-06: traceroute
 - New task kind `traceroute` (Linux): one sample per hop, three probes per hop sent together, the
   fastest reply is the hop's time. It uses the same unprivileged ICMP ping sockets as ping, with
