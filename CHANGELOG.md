@@ -4,6 +4,12 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: IPv6 checked as far as this machine allows
+- TCP and HTTP are exercised over the IPv6 loopback (connect, refusal, a request with a bracketed
+  `Host`), and traceroute over IPv6 through real routers in namespaces. What has *not* been tested is
+  a route to the public IPv6 internet: the machine used for development has none. IPv6 targets are
+  otherwise handled like IPv4 (same policy, same code paths), but treat public IPv6 as untested.
+
 ### 2026-11-06: fix: a lint that only Linux can see
 - The traceroute code is Linux-only, so clippy on macOS never compiled it; CI on Linux flagged one
   cast that is needed on musl but redundant on glibc. Allowed with the reason. Lesson kept in the

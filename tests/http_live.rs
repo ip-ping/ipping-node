@@ -506,3 +506,39 @@ mod end_to_end {
         assert_eq!(frames.len(), 1, "{frames:?}");
     }
 }
+
+#[tokio::test]
+async fn an_ipv6_request_carries_a_bracketed_host_and_works() {
+    let Ok(listener) = TcpListener::bind("[::1]:0").await else {
+        eprintln!("skipped: no IPv6 loopback on this host");
+        return;
+    };
+    let port = listener.local_addr().unwrap().port();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let captured = received.clone();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0u8; 2048];
+        let n = stream.read(&mut buffer).await.unwrap();
+        captured.lock().unwrap().extend_from_slice(&buffer[..n]);
+        let _ = stream.write_all(OK).await;
+    });
+    let request = HttpRequest {
+        ip: "::1".parse().unwrap(),
+        port,
+        tls_name: None,
+        host_header: format!("[::1]:{port}"),
+        path: "/".into(),
+        timeout: Duration::from_secs(5),
+    };
+    match HttpClient::new().fetch(&request).await {
+        HttpOutcome::Response(response) => assert_eq!(response.status, 200),
+        other => panic!("{other:?}"),
+    }
+    task.await.unwrap();
+    let sent = String::from_utf8(received.lock().unwrap().clone()).unwrap();
+    assert!(
+        sent.contains(&format!("\r\nHost: [::1]:{port}\r\n")),
+        "{sent}"
+    );
+}
