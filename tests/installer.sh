@@ -92,6 +92,19 @@ case "$out" in *boom-text*) check "run: shows the command's own error" ok ok ;; 
 run_soft "Soft failure" false >/dev/null 2>&1; check "run_soft: returns the exit status" 1 "$?"
 out="$(box "Title" "one" "a much longer line of text")"
 check "box: every line has the same width" 1 "$(printf '%s\n' "$out" | grep -v '^$' | awk '{ print length }' | sort -u | wc -l | tr -d ' ')"
+UI_COLS=80
+out="$(box "Title" "one" "a much longer line of text")"
+check "box: a frame on a terminal that is wide enough" 4 "$(printf '%s\n' "$out" | grep -c "^[+|]")"
+UI_COLS=24
+out="$(box "Title" "a line that cannot fit inside a narrow terminal")"
+check "box: no frame on a narrow terminal" 0 "$(printf '%s\n' "$out" | grep -c '^[+|]')"
+check "box: ...but every line is still there" 1 "$(printf '%s\n' "$out" | grep -c 'cannot fit')"
+UI_COLS=80
+ui_init_cols() { COLUMNS="$1" ui_init; echo "$UI_COLS/$UI_WIDTH"; }
+check "a 50-column terminal is not stretched to 60" "50/50" "$(ui_init_cols 50)"
+check "a very wide terminal is capped at 100" "200/100" "$(ui_init_cols 200)"
+check "an absurdly narrow one gets a floor" "24/24" "$(ui_init_cols 5)"
+check "a junk COLUMNS falls back" "ok" "$(COLUMNS=abc ui_init; [ "$UI_COLS" -ge 24 ] && echo ok)"
 # shellcheck disable=SC2034  # ASSUME_YES is read by is_interactive in the script under test
 X=already; ASSUME_YES=1; prompt X "Question?" "" ""; check "prompt: leaves a value given on the command line alone" already "$X"
 Y=""; prompt Y "Question?" "default" ""; check "prompt: asks nothing without a terminal" "" "$Y"

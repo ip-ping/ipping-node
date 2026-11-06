@@ -20,6 +20,16 @@ struct Cli {
     )]
     state_dir: PathBuf,
 
+    /// Allow a plain http:// backend on another host. The node's credential then travels
+    /// unencrypted, so only use this on a network you trust. Same as IPPING_NODE_ALLOW_INSECURE=1.
+    #[arg(
+        long,
+        alias = "allow-insecure",
+        env = "IPPING_NODE_ALLOW_INSECURE",
+        global = true
+    )]
+    insecure: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -167,7 +177,7 @@ async fn do_enroll(state: &StateDir, args: EnrollArgs) -> Result<(), String> {
 async fn do_run(state: StateDir, args: RunArgs) -> Result<(), String> {
     let mut loaded = state
         .load()
-        .map_err(|e| format!("cannot read {}: {e}", state.path().display()))?;
+        .map_err(|e| format!("cannot read the node's identity: {e}"))?;
     if loaded.is_none() {
         let (Some(token), Some(server)) =
             (set(args.enroll.token.clone()), set(args.server.clone()))
@@ -244,6 +254,7 @@ async fn main() -> ExitCode {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
 
+    ipping_node::server_url::allow_insecure(cli.insecure);
     let state = StateDir::new(cli.state_dir);
     let result = match cli.command {
         Command::Enroll(args) => do_enroll(&state, args).await,

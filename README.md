@@ -50,8 +50,9 @@ behind it goes to `/var/log/ipping-node-install.log` and is shown only if a step
 Run it without arguments for an interactive menu. Installs are repeatable (a second run keeps the
 node's identity), updates keep the previous release for rollback and roll back by themselves if the
 new one does not start, and `uninstall` keeps the node's identity unless you add `--purge`.
-`--allow-insecure` is needed to connect to a plain `http://` backend on another host (the default
-central install serves HTTP until you give it a domain); the credential then travels unencrypted.
+`--allow-insecure` (or `--insecure`) is needed to connect to a plain `http://` backend on another host
+(the default central install serves HTTP until you give it a domain); the credential then travels
+unencrypted.
 
 Direct mode runs as an unprivileged `ipping-node` user under a locked-down systemd unit. It
 checks `net.ipv4.ping_group_range`; only if the user cannot send unprivileged pings does the unit
@@ -65,6 +66,10 @@ cargo build --release
 # One-time: trade an enrollment token (admin page) for this node's own credential.
 ipping-node --state-dir ~/.ipping-node enroll --server https://ping.example.com --token ipt_... \
     --name "Falkenstein 1" --country DE --city Falkenstein
+
+# A site that is plain http:// on another host needs --insecure here and on `run` (or
+# IPPING_NODE_ALLOW_INSECURE=1, which is the same thing); the credential then travels unencrypted:
+#   ipping-node enroll --server http://203.0.113.7:8088 --token ... --insecure
 
 # An administrator approves the node in the admin page, then:
 ipping-node --state-dir ~/.ipping-node run

@@ -61,9 +61,11 @@ impl StateDir {
         let credential = match fs::read_to_string(self.credential_path()) {
             Ok(text) => text.trim().to_owned(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+            Err(error) => return Err(explain(&self.credential_path(), error)),
         };
-        let identity = serde_json::from_slice(&fs::read(self.identity_path())?)
+        let identity_bytes = fs::read(self.identity_path())
+            .map_err(|error| explain(&self.identity_path(), error))?;
+        let identity = serde_json::from_slice(&identity_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("node.json: {e}")))?;
         let mode = fs::metadata(self.credential_path())?.permissions().mode();
         if mode & 0o077 != 0 {
@@ -78,6 +80,26 @@ impl StateDir {
             credential,
         }))
     }
+}
+
+/// Say which file could not be read and, for the commonest cause, how to fix it: the node runs as
+/// its own account, and files left by someone else (for example an `enroll` run as root) are
+/// unreadable to it.
+fn explain(path: &Path, error: io::Error) -> io::Error {
+    if error.kind() != io::ErrorKind::PermissionDenied {
+        return io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    }
+    let directory = path.parent().unwrap_or(path);
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{}: {error}. The state directory and the files in it must belong to the account the \
+             node runs as (often `ipping-node`); if they were created by another account, for \
+             example by running `enroll` as root, fix that with: sudo chown -R ipping-node: {}",
+            path.display(),
+            directory.display()
+        ),
+    )
 }
 
 /// Write via a temporary file and rename, so a crash never leaves a half-written credential.
@@ -124,6 +146,32 @@ mod tests {
         assert_eq!(mode(state.path()), 0o700);
         assert_eq!(mode(&state.path().join("credential")), 0o600);
         assert_eq!(mode(&state.path().join("node.json")), 0o600);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_the_account_cannot_read_is_named_with_the_fix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("denied");
+        let state = StateDir::new(&dir);
+        state
+            .save(
+                &Identity {
+                    server: "https://ping.example.com".into(),
+                    node_id: "abc".into(),
+                },
+                "secret",
+            )
+            .unwrap();
+        fs::set_permissions(dir.join("credential"), fs::Permissions::from_mode(0o000)).unwrap();
+        // root can read anything, so only check where the permission really is denied.
+        if let Err(error) = state.load() {
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            let text = error.to_string();
+            assert!(text.contains("credential"), "{text}");
+            assert!(text.contains("chown -R"), "{text}");
+        }
+        fs::set_permissions(dir.join("credential"), fs::Permissions::from_mode(0o600)).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 }

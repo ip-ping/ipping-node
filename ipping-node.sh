@@ -63,9 +63,12 @@ ui_init() {
   if [ "$UI_TTY" -eq 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then UI_COLOR=1; fi
   case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UI_UNICODE=1 ;; esac
   if [ "$UI_TTY" -eq 0 ]; then UI_UNICODE=0; fi
-  UI_WIDTH="${COLUMNS:-}"
-  case "$UI_WIDTH" in '' | *[!0-9]*) UI_WIDTH="$(tput cols 2>/dev/null || echo 80)" ;; esac
-  if [ "$UI_WIDTH" -lt 60 ]; then UI_WIDTH=60; fi
+  # UI_COLS is how wide the terminal really is; UI_WIDTH what the layout uses (never wider than 100).
+  UI_COLS="${COLUMNS:-}"
+  case "$UI_COLS" in '' | *[!0-9]*) UI_COLS="$(tput cols 2>/dev/null || echo 80)" ;; esac
+  case "$UI_COLS" in '' | *[!0-9]*) UI_COLS=80 ;; esac
+  if [ "$UI_COLS" -lt 24 ]; then UI_COLS=24; fi
+  UI_WIDTH=$UI_COLS
   if [ "$UI_WIDTH" -gt 100 ]; then UI_WIDTH=100; fi
   if [ "$UI_COLOR" -eq 1 ]; then
     C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
@@ -94,7 +97,11 @@ ui_rule() {
 
 banner() { # banner TITLE [SUBTITLE]
   printf '\n%s%s%s' "$C_BOLD" "$1" "$C_RESET"
-  if [ -n "${2:-}" ]; then printf '  %s%s%s' "$C_DIM" "$2" "$C_RESET"; fi
+  if [ -n "${2:-}" ]; then
+    # Beside the title if it fits, on its own line if not (a wrapped line would split a word).
+    if [ $((${#1} + ${#2} + 2)) -lt "$UI_COLS" ]; then printf '  '; else printf '\n'; fi
+    printf '%s%s%s' "$C_DIM" "$2" "$C_RESET"
+  fi
   printf '\n'
   ui_rule
 }
@@ -135,7 +142,8 @@ ui_spin_start() {
     i=0
     n=${#UI_SPIN[@]}
     while :; do
-      printf '\r  %s%s%s %s' "$C_CYAN" "${UI_SPIN[i % n]}" "$C_RESET" "$1"
+      # Cut to one line: a wrapped spinner line leaves its first row behind when it is cleared.
+      printf '\r\033[K  %s%s%s %s' "$C_CYAN" "${UI_SPIN[i % n]}" "$C_RESET" "${1:0:$((UI_COLS - 6))}"
       i=$((i + 1))
       sleep 0.1
     done
@@ -186,6 +194,12 @@ box() {
   shift
   w=$((${#title} + 2))
   for line in "$@"; do if [ "${#line}" -gt "$w" ]; then w=${#line}; fi; done
+  if [ $((w + 4)) -gt "$UI_COLS" ]; then
+    # Too wide for this terminal: a frame would wrap into a mess, so print the same lines plainly.
+    printf '\n%s%s%s\n' "${C_BOLD}${color}" "$title" "$C_RESET"
+    for line in "$@"; do printf '  %s\n' "$line"; done
+    return 0
+  fi
   for ((i = 0; i < w + 2; i++)); do bar+="$S_H"; done
   for ((i = 0; i < w - ${#title} - 1; i++)); do tbar+="$S_H"; done
   printf '\n%s%s%s %s%s%s%s %s%s%s\n' "$color" "$S_TL" "$S_H" "$C_BOLD" "$title" "$C_RESET" "$color" "$tbar" "$S_TR" "$C_RESET"
@@ -675,6 +689,7 @@ install_direct_mode() {
   fi
   install -d -m 0755 "$APP_DIR"
   install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "$STATE_DIR"
+  fix_state_ownership
   tick "An unprivileged account (${RUN_USER}) and a private state directory"
 
   step "Getting ipping-node"
@@ -719,6 +734,14 @@ install_direct_mode() {
   finish_message
 }
 
+# Whatever is already in the state directory (an `enroll` once run as root, an account recreated
+# with another id) must belong to the service account, or the node cannot read its own credential.
+fix_state_ownership() {
+  chown -R "${RUN_USER}:${RUN_USER}" "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  find "$STATE_DIR" -type f -exec chmod 600 {} +
+}
+
 wait_for_active() { # wait_for_active SECONDS: the service must be active for this long without restarting
   local i
   for ((i = 0; i < $1; i++)); do
@@ -746,9 +769,14 @@ finish_message() {
     "Node     ${NAME:-$(hostname)}" \
     "Status   $(node_approval)" \
     ""
-  printf '\n%sNext%s\n' "$C_BOLD" "$C_RESET"
-  info "Open the admin page of your ipping site, go to Nodes, and approve this node."
-  info "It starts receiving measurements as soon as you do."
+  case "$(node_approval)" in
+    approved*) printf '\n%sThis node is approved and already receives measurements.%s\n' "$C_BOLD" "$C_RESET" ;;
+    *)
+      printf '\n%sNext%s\n' "$C_BOLD" "$C_RESET"
+      info "Open the admin page of your ipping site, go to Nodes, and approve this node."
+      info "It starts receiving measurements as soon as you do."
+      ;;
+  esac
   printf '\n%sLater%s   sudo bash %s status | doctor | logs | update\n' "$C_BOLD" "$C_RESET" "$(basename "$0")"
 }
 
@@ -855,6 +883,7 @@ cmd_update() {
 
   step "Switching to ${tag}"
   ln -sfn "$releases_dir" "${APP_DIR}/current"
+  fix_state_ownership
   run "Restarting the service" systemctl restart "$SERVICE"
   if ! run_soft "Checking that the new version stays up" wait_for_active 5; then
     warn "The new version did not start; rolling back."
@@ -886,6 +915,7 @@ cmd_doctor() {
   step "The node"
   check "the node is running" "sudo bash $0 logs" node_running
   if [ "$mode" = "direct" ]; then
+    check "the state directory belongs to ${RUN_USER}" "sudo chown -R ${RUN_USER}: ${STATE_DIR}" bash -c "[ -z \"\$(find '${STATE_DIR}' ! -user '${RUN_USER}' 2>/dev/null | head -n 1)\" ]"
     check "the credential file is private (mode 600)" "sudo chmod 600 ${STATE_DIR}/credential" bash -c "[ \"\$(stat -c %a '${STATE_DIR}/credential')\" = 600 ]"
     if service_group_can_ping; then
       check "unprivileged ICMP is allowed (ping_group_range)" "" true
@@ -953,7 +983,7 @@ Options:
   --name NAME  --country CC  --city CITY  --provider NAME     What the public node list shows
   --version vX.Y.Z         Release to install (default: latest)
   --binary FILE            Install this binary instead of downloading a release (direct mode)
-  --allow-insecure         Permit a plain http:// backend on another host. The node's credential is then
+  --allow-insecure         (or --insecure) Permit a plain http:// backend on another host. The node's credential is then
                            sent unencrypted, so use it only on a network you trust (the default is to refuse).
   --purge                  With uninstall: also delete the node's identity
   -y, --yes                Do not ask questions
@@ -1102,7 +1132,7 @@ main() {
         valid_version "$VERSION" || die "'${VERSION}' is not a version. Use something like v0.2.0 or latest."
         ;;
       --binary) BINARY_OVERRIDE="${2:?--binary needs a value}"; shift ;;
-      --allow-insecure) ALLOW_INSECURE=1 ;;
+      --allow-insecure | --insecure) ALLOW_INSECURE=1 ;;
       --purge) PURGE=1 ;;
       -y | --yes) ASSUME_YES=1 ;;
       -h | --help) usage; exit 0 ;;

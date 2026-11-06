@@ -4,6 +4,15 @@
 //! is on this machine (development) or the operator opts in explicitly.
 
 use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by `--insecure` (or `IPPING_NODE_ALLOW_INSECURE=1`, which the command line reads too).
+static ALLOW_INSECURE: AtomicBool = AtomicBool::new(false);
+
+/// Permit a plain `http://` backend on another host: the credential then travels unencrypted.
+pub fn allow_insecure(allowed: bool) {
+    ALLOW_INSECURE.store(allowed, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UrlError {
@@ -13,7 +22,7 @@ pub enum UrlError {
     Host,
     #[error(
         "refusing to send credentials over plain http:// to a remote host; use https://, or set \
-         IPPING_NODE_ALLOW_INSECURE=1 if you understand the risk"
+         --insecure (or IPPING_NODE_ALLOW_INSECURE=1) if you understand the risk"
     )]
     Insecure,
 }
@@ -57,7 +66,8 @@ fn is_local(host: &str) -> bool {
 }
 
 fn check(parts: &Parts<'_>) -> Result<(), UrlError> {
-    let allowed = env::var("IPPING_NODE_ALLOW_INSECURE").is_ok_and(|v| v == "1");
+    let allowed = ALLOW_INSECURE.load(Ordering::Relaxed)
+        || env::var("IPPING_NODE_ALLOW_INSECURE").is_ok_and(|v| v == "1");
     if !parts.secure && !is_local(parts.host) && !allowed {
         return Err(UrlError::Insecure);
     }

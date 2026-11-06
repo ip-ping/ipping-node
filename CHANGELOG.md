@@ -4,6 +4,30 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.3.2 (2026-11-06)
+
+### `--insecure`
+- `ipping-node enroll --server http://... --token ... --insecure` (also `--allow-insecure`, and
+  before or after the subcommand) is the same as `IPPING_NODE_ALLOW_INSECURE=1`, which still works.
+  It applies to `run` too. The refusal message names the flag. Tested against the real binary.
+
+### fix: a node whose state files belonged to another account would not start
+- Reported on a real machine: after an install that found the node "already enrolled", the service
+  died with `cannot read /var/lib/ipping-node: Permission denied`. The state directory was owned
+  by the service account but the files inside (`credential`, `node.json`) were not, typically
+  because `enroll` had once been run as root. Now the installer (install and update) hands the whole
+  state directory to the service account and sets the modes again, `doctor` checks it and says what
+  to run, and the node's own error names the file and the fix (`sudo chown -R ipping-node: ...`)
+  instead of the directory.
+- Reproduced on Debian 13 (root-owned state, service failing), then fixed by install and by update.
+
+### fix: the installer on a narrow terminal
+- The layout forced a minimum width of 60 columns, so on a narrower terminal rules and boxes wrapped.
+  It now follows the terminal; a box whose lines do not fit is printed without a frame; a spinner line
+  is cut to one row (a wrapped one left a row behind when cleared); a banner subtitle that does not fit
+  beside the title goes on its own line.
+- When the node is already approved the summary no longer tells you to go and approve it.
+
 ## v0.3.1 (2026-11-06)
 
 Two things found by installing the real v0.3.0 releases on a fresh Debian 13 machine and updating
