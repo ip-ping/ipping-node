@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod http;
+mod traceroute;
 
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
@@ -137,8 +138,9 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
         match task.kind {
             TaskKind::Ping | TaskKind::Tcp => self.run_series(&task, &job, ip, &resolved).await,
             TaskKind::Http => self.run_http(&task, &job, ip, &resolved, dns).await,
-            // `check` has already refused every other kind.
-            TaskKind::Traceroute | TaskKind::Unknown => {}
+            TaskKind::Traceroute => self.run_traceroute(&task, &job, ip, &resolved).await,
+            // `check` has already refused this.
+            TaskKind::Unknown => {}
         }
     }
 
@@ -168,7 +170,8 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
                     .map_err(|e| Failure::new(error_code::PORT_NOT_ALLOWED, e.to_string()))
             }
             TaskKind::Http => self.check_http(task),
-            TaskKind::Traceroute | TaskKind::Unknown => Err(Failure::new(
+            TaskKind::Traceroute => self.check_traceroute(task),
+            TaskKind::Unknown => Err(Failure::new(
                 error_code::UNSUPPORTED_KIND,
                 "This node does not run that kind of measurement.",
             )),

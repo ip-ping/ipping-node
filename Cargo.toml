@@ -2,7 +2,7 @@
 name = "ipping-node"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Measurement node for ipping: runs bounded network probes on behalf of the backend"
 license = "MIT"
 repository = "https://github.com/ip-ping/ipping-node"
@@ -30,6 +30,9 @@ url = "2"
 webpki-roots = "1"
 x509-parser = "0.18"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls", "json"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [profile.release]
 lto = "thin"

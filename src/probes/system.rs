@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::http::{HttpClient, HttpOutcome, HttpRequest};
 use super::icmp::IcmpProber;
+use super::traceroute::{self, HopOutcome};
 use super::{ConnectOutcome, EchoOutcome, Prober, tcp};
 use crate::protocol::Capabilities;
 
@@ -27,6 +28,9 @@ impl SystemProber {
         let mut capabilities = self.icmp.capabilities();
         capabilities.kinds.push("tcp".into());
         capabilities.kinds.push("http".into());
+        if traceroute::available(false) || traceroute::available(true) {
+            capabilities.kinds.push("traceroute".into());
+        }
         capabilities
     }
 
@@ -48,6 +52,15 @@ impl Prober for SystemProber {
 
     async fn connect(&self, addr: SocketAddr, timeout: Duration) -> ConnectOutcome {
         tcp::connect_once(addr, timeout).await
+    }
+
+    async fn hop(&self, ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
+        // The wait is a blocking poll(2), so it runs on the blocking pool.
+        tokio::task::spawn_blocking(move || traceroute::probe(ip, ttl, seq, timeout))
+            .await
+            .unwrap_or(HopOutcome::Failed(
+                crate::protocol::error_code::INTERNAL_ERROR,
+            ))
     }
 
     async fn http_once(&self, request: HttpRequest) -> HttpOutcome {

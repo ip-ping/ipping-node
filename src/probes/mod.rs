@@ -5,6 +5,7 @@ pub mod http;
 pub mod icmp;
 pub mod system;
 pub mod tcp;
+pub mod traceroute;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -57,6 +58,19 @@ pub trait Prober: Send + Sync + 'static {
     ) -> impl Future<Output = ConnectOutcome> + Send {
         let _ = (addr, timeout);
         async { ConnectOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
+    }
+
+    /// Send one echo request with this TTL and report who answered. Every hop of a traceroute is
+    /// a few of these.
+    fn hop(
+        &self,
+        ip: IpAddr,
+        ttl: u8,
+        seq: u16,
+        timeout: Duration,
+    ) -> impl Future<Output = traceroute::HopOutcome> + Send {
+        let _ = (ip, ttl, seq, timeout);
+        async { traceroute::HopOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
     }
 
     /// Make one HTTP request to one address: connect, optionally TLS, send a GET, read the

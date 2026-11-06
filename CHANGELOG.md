@@ -4,6 +4,22 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: traceroute
+- New task kind `traceroute` (Linux): one sample per hop, three probes per hop sent together, the
+  fastest reply is the hop's time. It uses the same unprivileged ICMP ping sockets as ping, with
+  `IP_RECVERR`: a router whose TTL ran out sends "time exceeded", which the kernel delivers to the
+  socket's error queue together with the router's address. No raw socket, no extra capability, both
+  IPv4 and IPv6. Advertised only if the node can open such a socket.
+- The trace stops at the destination, when a router says it is unreachable, at `max_hops` (30), or
+  after eight silent hops in a row. Silent routers cost only their timeout.
+- A hop that is not a public address (the node operator's router, carrier-grade NAT) is reported as
+  "a private hop" with no address, so a result never discloses someone's network.
+- Tested for real, not mocked: `tests/netns/traceroute.sh` builds `src - r1 - r2 - dst` out of network
+  namespaces and traces through it over IPv4 and IPv6 (hops 10.0.1.2, 10.0.2.2, then the destination,
+  all three probes answered with microsecond round trips); it runs in CI. 9 scripted tests cover the
+  route logic. Verified on aarch64 Linux in Docker; macOS builds without it.
+- `rust-version` is now 1.88 (the code uses let chains).
+
 ### 2026-11-06: HTTP checks
 - New task kind `http`: connect to the pinned address, optionally TLS, send one `GET` (headers
   only, no body is ever read), and report the status, server, timings of each phase (DNS, connect,

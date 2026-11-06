@@ -28,6 +28,24 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  traceroute:
+    name: Traceroute through real routers (network namespaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Lint the test script
+        run: shellcheck tests/netns/traceroute.sh
+      - name: Build the test as the normal user
+        run: |
+          bin="$(cargo test --test traceroute_live --no-run --locked --message-format=json \
+            | grep -o '"executable":"[^"]*traceroute_live[^"]*"' | head -1 | cut -d'"' -f4)"
+          echo "TRACEROUTE_TEST_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Three routers, IPv4 and IPv6
+        run: sudo env "TRACEROUTE_TEST_BIN=$TRACEROUTE_TEST_BIN" tests/netns/traceroute.sh
+
   image:
     name: Container image builds for both architectures
     runs-on: ubuntu-latest

@@ -86,6 +86,7 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | --- | --- | --- |
 | `ping` | an ICMP echo | 1 to 10 per task, 56-byte payload, public addresses only |
 | `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
+| `traceroute` | one hop (three probes) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
 
 The node refuses any task for a kind it did not advertise, whatever the backend sends.
@@ -138,7 +139,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] `ipping-node.sh` installer (direct and Docker modes; tested in clean containers, see CHANGELOG)
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
-- [ ] Traceroute
+- [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
 
 ## License
 
