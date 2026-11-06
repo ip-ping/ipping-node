@@ -4,6 +4,28 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: HTTP checks
+- New task kind `http`: connect to the pinned address, optionally TLS, send one `GET` (headers
+  only, no body is ever read), and report the status, server, timings of each phase (DNS, connect,
+  TLS, first byte, total) and the TLS certificate (version, cipher, subject, issuer, validity).
+  A small HTTP/1.1 client written for measuring rather than a general one: each phase has its own
+  clock and the address is the one the backend chose, with the Host header and TLS server name set
+  from the name it was given.
+- Certificates are verified against the Mozilla roots. One that does not verify (expired, wrong name,
+  unknown issuer) still completes the handshake so it can be *described*, and the result is
+  `tls_certificate_invalid` with the reason, but **nothing is sent to a server that could not be
+  authenticated**; a test asserts the server received zero bytes.
+- Redirects are reported, and followed only if the task allows (up to 5). Each hop is a new
+  destination nobody vetted, so the node resolves it itself and applies the policy again: public
+  addresses only, allowed ports only, http/https only, no credentials in the URL, a bounded target.
+  Query strings are never reported. The whole chain shares one time budget.
+- Anything from the network that is reported (Server header, certificate names) is reduced to
+  printable ASCII and length-limited; a response head over 16 KiB, non-HTTP answers and oversized
+  redirect targets are `protocol_error`.
+- 20 new tests: scripted redirects and policy at every hop, request-smuggling inputs, real sockets with
+  a test CA (trusted, expired, wrong name, unknown issuer, IP-address certificate, TLS to a plain
+  server), and the runner with the real client following a redirect chain.
+
 ### 2026-11-06: TCP connect checks
 - New task kind `tcp`: open a connection to a port, time the handshake, close it without sending a
   byte. A refusal is reported as an `error` sample that keeps its time (the host answered); a timeout

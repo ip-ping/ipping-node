@@ -1,7 +1,9 @@
 //! Probe implementations. Each probe type has fixed semantics and hard limits; there is no
 //! way to ask for a custom packet size, flood mode or a sweep.
 
+pub mod http;
 pub mod icmp;
+pub mod system;
 pub mod tcp;
 
 use std::future::Future;
@@ -55,6 +57,21 @@ pub trait Prober: Send + Sync + 'static {
     ) -> impl Future<Output = ConnectOutcome> + Send {
         let _ = (addr, timeout);
         async { ConnectOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
+    }
+
+    /// Make one HTTP request to one address: connect, optionally TLS, send a GET, read the
+    /// response head. Redirects are the runner's business, since each one needs the policy.
+    fn http_once(
+        &self,
+        request: http::HttpRequest,
+    ) -> impl Future<Output = http::HttpOutcome> + Send {
+        let _ = request;
+        async {
+            http::HttpOutcome::Failed(http::HttpFailure::new(
+                crate::protocol::error_code::UNSUPPORTED_KIND,
+                "This node cannot make HTTP requests.",
+            ))
+        }
     }
 }
 

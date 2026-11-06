@@ -10,7 +10,7 @@ use std::time::Duration;
 use socket2::Type as SocketType;
 use surge_ping::{Client, Config, ICMP, PingIdentifier, PingSequence, SurgeError};
 
-use super::{ConnectOutcome, EchoOutcome, Prober, failure_code, tcp};
+use super::{EchoOutcome, Prober, failure_code};
 use crate::protocol::{Capabilities, error_code};
 
 /// Fixed payload: 56 bytes, like the classic `ping`. Never configurable.
@@ -63,11 +63,10 @@ impl IcmpProber {
     /// *and* there is a route for that IP version.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
-            // TCP needs nothing special; ping needs an ICMP socket.
             kinds: if self.v4.is_some() || self.v6.is_some() {
-                vec!["ping".into(), "tcp".into()]
+                vec!["ping".into()]
             } else {
-                vec!["tcp".into()]
+                vec![]
             },
             ipv4: self.v4.is_some() && has_route(false),
             ipv6: self.v6.is_some() && has_route(true),
@@ -105,9 +104,5 @@ impl Prober for IcmpProber {
                 EchoOutcome::Failed(error_code::INTERNAL_ERROR)
             }
         }
-    }
-
-    async fn connect(&self, addr: std::net::SocketAddr, timeout: Duration) -> ConnectOutcome {
-        tcp::connect_once(addr, timeout).await
     }
 }

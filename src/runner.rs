@@ -8,12 +8,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod http;
+
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
 use crate::policy::{Policy, validate_hostname};
+use crate::probes::http::micros;
 use crate::probes::{ConnectOutcome, EchoOutcome, Prober};
 use crate::protocol::{
     Capabilities, ClientFrame, Family, ResultStatus, SampleStatus, Task, TaskKind, TaskOptions,
@@ -23,7 +26,7 @@ use crate::resolve::Resolve;
 
 pub const MAX_COUNT: u32 = 10;
 const INTERVAL_MS: std::ops::RangeInclusive<u64> = 200..=5_000;
-const TIMEOUT_MS: std::ops::RangeInclusive<u64> = 200..=10_000;
+pub(crate) const TIMEOUT_MS: std::ops::RangeInclusive<u64> = 200..=10_000;
 
 /// A task failure: a protocol error code plus a short human-readable reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,9 +116,15 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             return;
         }
 
+        let dns_started = Instant::now();
         let resolution = tokio::select! {
             () = job.cancel.cancelled() => return,
             resolution = self.resolve_target(&task) => resolution,
+        };
+        let dns = if task.target.hostname.is_some() {
+            dns_started.elapsed()
+        } else {
+            Duration::ZERO
         };
         let (ip, resolved) = match resolution {
             Ok(found) => found,
@@ -127,8 +136,9 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
 
         match task.kind {
             TaskKind::Ping | TaskKind::Tcp => self.run_series(&task, &job, ip, &resolved).await,
+            TaskKind::Http => self.run_http(&task, &job, ip, &resolved, dns).await,
             // `check` has already refused every other kind.
-            TaskKind::Http | TaskKind::Traceroute | TaskKind::Unknown => {}
+            TaskKind::Traceroute | TaskKind::Unknown => {}
         }
     }
 
@@ -157,7 +167,8 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
                     .map(|_| ())
                     .map_err(|e| Failure::new(error_code::PORT_NOT_ALLOWED, e.to_string()))
             }
-            TaskKind::Http | TaskKind::Traceroute | TaskKind::Unknown => Err(Failure::new(
+            TaskKind::Http => self.check_http(task),
+            TaskKind::Traceroute | TaskKind::Unknown => Err(Failure::new(
                 error_code::UNSUPPORTED_KIND,
                 "This node does not run that kind of measurement.",
             )),
@@ -259,67 +270,20 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
     /// Turn the task's target into the one address that will be probed, applying the policy to
     /// every address involved. Returns that address and everything the name resolved to.
     async fn resolve_target(&self, task: &Task) -> Result<(IpAddr, Vec<IpAddr>), Failure> {
-        let caps = &self.capabilities;
         let family = task.target.family;
-        let family_allows = |ip: &IpAddr| {
-            !matches!(
-                (family, ip),
-                (Family::V4, IpAddr::V6(_)) | (Family::V6, IpAddr::V4(_))
-            )
-        };
-        let node_can = |ip: &IpAddr| if ip.is_ipv4() { caps.ipv4 } else { caps.ipv6 };
-
         match (&task.target.ip, &task.target.hostname) {
             (Some(text), None) => {
                 let ip = self
                     .policy
                     .parse_ip(text)
                     .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?;
-                if !family_allows(&ip) || !node_can(&ip) {
-                    return Err(Failure::new(
-                        error_code::UNSUPPORTED_FAMILY,
-                        format!(
-                            "This node cannot probe {ip} (IPv{}).",
-                            if ip.is_ipv4() { 4 } else { 6 }
-                        ),
-                    ));
-                }
+                self.check_literal(ip, family)?;
                 Ok((ip, vec![ip]))
             }
             (None, Some(host)) => {
                 let host = validate_hostname(host)
                     .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?;
-                let addresses = self.resolver.lookup(&host).await.map_err(|e| {
-                    Failure::new(
-                        error_code::DNS_FAILURE,
-                        format!("Could not resolve {host}: {e}"),
-                    )
-                })?;
-                if addresses.is_empty() {
-                    return Err(Failure::new(
-                        error_code::DNS_FAILURE,
-                        format!("{host} has no A or AAAA records."),
-                    ));
-                }
-                // One non-public answer refuses the whole name, rather than quietly skipping it.
-                for ip in &addresses {
-                    self.policy
-                        .check_ip(*ip)
-                        .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?;
-                }
-                let usable = |want_v4: bool| {
-                    addresses
-                        .iter()
-                        .copied()
-                        .find(|ip| ip.is_ipv4() == want_v4 && family_allows(ip) && node_can(ip))
-                };
-                let chosen = usable(true).or_else(|| usable(false)).ok_or_else(|| {
-                    Failure::new(
-                        error_code::UNSUPPORTED_FAMILY,
-                        format!("{host} has no address this node can reach with the requested IP version."),
-                    )
-                })?;
-                Ok((chosen, addresses))
+                self.resolve_name(&host, family).await
             }
             _ => Err(Failure::new(
                 error_code::INTERNAL_ERROR,
@@ -327,6 +291,73 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             )),
         }
     }
+
+    /// An address given as a literal: the family the task asked for, and one this node can reach.
+    fn check_literal(&self, ip: IpAddr, family: Family) -> Result<(), Failure> {
+        if !family_allows(family, &ip) || !self.node_can(&ip) {
+            return Err(Failure::new(
+                error_code::UNSUPPORTED_FAMILY,
+                format!(
+                    "This node cannot probe {ip} (IPv{}).",
+                    if ip.is_ipv4() { 4 } else { 6 }
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn node_can(&self, ip: &IpAddr) -> bool {
+        if ip.is_ipv4() {
+            self.capabilities.ipv4
+        } else {
+            self.capabilities.ipv6
+        }
+    }
+
+    /// Resolve a (validated) hostname here and pick the address to use. One non-public answer
+    /// refuses the whole name, rather than quietly skipping it.
+    async fn resolve_name(
+        &self,
+        host: &str,
+        family: Family,
+    ) -> Result<(IpAddr, Vec<IpAddr>), Failure> {
+        let addresses = self.resolver.lookup(host).await.map_err(|e| {
+            Failure::new(
+                error_code::DNS_FAILURE,
+                format!("Could not resolve {host}: {e}"),
+            )
+        })?;
+        if addresses.is_empty() {
+            return Err(Failure::new(
+                error_code::DNS_FAILURE,
+                format!("{host} has no A or AAAA records."),
+            ));
+        }
+        for ip in &addresses {
+            self.policy
+                .check_ip(*ip)
+                .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?;
+        }
+        let usable = |want_v4: bool| {
+            addresses.iter().copied().find(|ip| {
+                ip.is_ipv4() == want_v4 && family_allows(family, ip) && self.node_can(ip)
+            })
+        };
+        let chosen = usable(true).or_else(|| usable(false)).ok_or_else(|| {
+            Failure::new(
+                error_code::UNSUPPORTED_FAMILY,
+                format!("{host} has no address this node can reach with the requested IP version."),
+            )
+        })?;
+        Ok((chosen, addresses))
+    }
+}
+
+fn family_allows(family: Family, ip: &IpAddr) -> bool {
+    !matches!(
+        (family, ip),
+        (Family::V4, IpAddr::V6(_)) | (Family::V6, IpAddr::V4(_))
+    )
 }
 
 fn check_series_options(options: &TaskOptions) -> Result<(), Failure> {
@@ -340,10 +371,6 @@ fn check_series_options(options: &TaskOptions) -> Result<(), Failure> {
         ));
     }
     Ok(())
-}
-
-fn micros(duration: Duration) -> u64 {
-    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// What one attempt of a series came to.

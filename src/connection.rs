@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_util::sync::CancellationToken;
 
 use crate::policy::Policy;
-use crate::probes::icmp::IcmpProber;
+use crate::probes::system::SystemProber;
 use crate::protocol::{
     ClientFrame, MAX_FRAME_BYTES, NodeStatus, PROTOCOL_VERSION, ResultStatus, ServerFrame, Welcome,
     error_code,
@@ -65,7 +65,7 @@ enum SessionError {
 
 /// Run until `shutdown` is cancelled, reconnecting as needed.
 pub async fn run(settings: Settings, shutdown: CancellationToken) {
-    let prober = Arc::new(IcmpProber::new());
+    let prober = Arc::new(SystemProber::new());
     if !prober.has_any_socket() {
         tracing::error!(
             "cannot open ICMP sockets. Allow unprivileged ping (sysctl net.ipv4.ping_group_range) or \
@@ -110,7 +110,7 @@ fn encode(frame: &ClientFrame) -> Message {
 
 async fn session(
     settings: &Settings,
-    prober: &Arc<IcmpProber>,
+    prober: &Arc<SystemProber>,
     shutdown: &CancellationToken,
 ) -> Result<(), SessionError> {
     let url = server_url::ws_url(&settings.server, "api/v1/nodes/connect")?;
