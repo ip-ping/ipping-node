@@ -123,7 +123,7 @@ make_temp_dir() {
 resolve_version() {
   # A tag such as v0.1.0, or the newest published release.
   if [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]; then
-    case "$VERSION" in v*) echo "$VERSION" ;; *) echo "v$VERSION" ;; esac
+    normalize_tag "$VERSION"
     return
   fi
   local tag
@@ -154,16 +154,41 @@ download_verified_binary() {
 # Docker
 # ------------------------------------------------------------------------------------------------
 
+# A release is vX.Y.Z (the v is optional), optionally with a -rc.N style suffix. Anything else is
+# refused up front, so a typo can never end up inside a download URL.
+valid_version() {
+  case "$1" in
+    "" | latest) return 0 ;;
+  esac
+  local pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+  [[ $1 =~ $pattern ]]
+}
+
+normalize_tag() {
+  case "$1" in v*) printf '%s' "$1" ;; *) printf 'v%s' "$1" ;; esac
+}
+
+# One value from /etc/os-release, read in a subshell. Never `source` that file into this script:
+# it defines VERSION, NAME, ID and more, which silently replaced this script's own variables
+# (Debian 13 has VERSION="13 (trixie)", which became the release to download).
+os_release() {
+  ( # shellcheck source=/dev/null
+    . "${OS_RELEASE_FILE:-/etc/os-release}" 2>/dev/null
+    printf '%s' "${!1:-}" )
+}
+
 install_docker_if_missing() {
   if command_exists docker && docker compose version >/dev/null 2>&1; then return; fi
   command_exists apt-get || die "Docker with the compose plugin is required. Install it (https://docs.docker.com/engine/install/) and run this again."
   confirm "Docker (with the compose plugin) is not installed. Install it from Docker's apt repository?" \
     || die "Docker is required for --mode docker."
   step "Installing Docker from Docker's apt repository"
-  # shellcheck source=/dev/null
-  . /etc/os-release
-  local distro="$ID"
+  local distro codename
+  distro="$(os_release ID)"
+  codename="$(os_release UBUNTU_CODENAME)"
+  codename="${codename:-$(os_release VERSION_CODENAME)}"
   case "$distro" in ubuntu | debian) ;; *) die "Automatic Docker installation supports Debian and Ubuntu; install Docker manually." ;; esac
+  [ -n "$codename" ] || die "Could not tell which release of ${distro} this is (no codename in /etc/os-release)."
   apt-get update -qq
   apt-get install -y -qq ca-certificates curl >/dev/null
   install -m 0755 -d /etc/apt/keyrings
@@ -172,7 +197,7 @@ install_docker_if_missing() {
   cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/${distro}
-Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
+Suites: ${codename}
 Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
@@ -615,8 +640,7 @@ elevate_if_needed() {
 }
 
 main() {
-  elevate_if_needed "$@"
-  local command=""
+  local command="" original_args=("$@")
   TOKEN="${IPPING_NODE_ENROLL_TOKEN:-}"
   SERVER="${IPPING_NODE_SERVER:-}"
   NAME="${IPPING_NODE_NAME:-}"
@@ -633,7 +657,10 @@ main() {
       --country) COUNTRY="${2:?--country needs a value}"; shift ;;
       --city) CITY="${2:?--city needs a value}"; shift ;;
       --provider) PROVIDER="${2:?--provider needs a value}"; shift ;;
-      --version) VERSION="${2:?--version needs a value}"; shift ;;
+      --version)
+        VERSION="${2:?--version needs a value}"; shift
+        valid_version "$VERSION" || die "'${VERSION}' is not a version. Use something like v0.2.0 or latest."
+        ;;
       --binary) BINARY_OVERRIDE="${2:?--binary needs a value}"; shift ;;
       --allow-insecure) ALLOW_INSECURE=1 ;;
       --purge) PURGE=1 ;;
@@ -644,6 +671,8 @@ main() {
     shift
   done
 
+  # Only now, with the arguments known to be good: asking for a password for a typo is rude.
+  elevate_if_needed "${original_args[@]}"
   case "$command" in
     "") if [ -t 0 ]; then need_root; menu; else usage; exit 1; fi ;;
     install) cmd_install ;;
@@ -658,4 +687,7 @@ main() {
   esac
 }
 
-main "$@"
+# Run when executed (also when piped from curl), but not when a test sources this file.
+if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

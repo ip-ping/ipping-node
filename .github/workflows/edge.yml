@@ -37,7 +37,9 @@ jobs:
         with:
           persist-credentials: false
       - name: ShellCheck (never publish a script that fails it)
-        run: shellcheck ipping-node.sh
+        run: |
+          shellcheck ipping-node.sh tests/installer.sh
+          bash tests/installer.sh
       - name: Replace the files on the edge release
         run: |
           set -eu

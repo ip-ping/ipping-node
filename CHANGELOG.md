@@ -4,6 +4,21 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: fix: installing Docker on Debian 13 broke the release lookup
+- The installer *sourced* `/etc/os-release` into its own shell, and that file defines `VERSION`
+  (Debian 13: `13 (trixie)`) and `NAME` (the node's own display name, so a Docker install on Debian also renamed the node to "Debian GNU/Linux"). Whenever Docker had to be installed, `VERSION` became the release to
+  download, giving `Could not download .../releases/download/v13 (trixie)/release-manifest.json`.
+  The file is now read in a subshell (`os_release KEY`), so it can never touch the script's variables.
+- `--version` is validated up front (`v1.2.3`, `latest`), so any other value is refused with a
+  clear message instead of ending up inside a URL.
+- Arguments are validated *before* asking for sudo, not after.
+- Reproduced on a real Debian 13 machine (systemd, no Docker): v0.2.0 fails with the exact error above;
+  with the fix the same machine installs Docker, fetches the right release and the whole stack comes
+  up healthy and a node enrolls with the name it was given.
+- Why it was missed: every earlier test ran with Docker already installed, so the install-Docker branch
+  never executed. `tests/installer.sh` now covers the helper (Debian 13 and Ubuntu 24.04 fixtures), the
+  version rules and the command line, and runs in CI.
+
 ## v0.2.0 (2026-11-05)
 
 ### 2026-11-04: verification and hardening
