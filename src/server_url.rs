@@ -67,7 +67,8 @@ fn is_local(host: &str) -> bool {
 
 fn check(parts: &Parts<'_>) -> Result<(), UrlError> {
     let allowed = ALLOW_INSECURE.load(Ordering::Relaxed)
-        || env::var("IPPING_NODE_ALLOW_INSECURE").is_ok_and(|v| v == "1");
+        || env::var("IPPING_NODE_ALLOW_INSECURE")
+            .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     if !parts.secure && !is_local(parts.host) && !allowed {
         return Err(UrlError::Insecure);
     }

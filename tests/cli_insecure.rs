@@ -74,4 +74,27 @@ fn the_flag_allows_it_in_either_position_and_under_either_name() {
 fn the_environment_variable_still_works() {
     let error = enroll(&[], true);
     assert!(!error.contains(REFUSAL), "{error}");
+    assert!(!error.contains("invalid value"), "{error}");
+}
+
+/// What the installer puts in the systemd unit and the container's `.env`: `1`. A boolean flag
+/// bound to that variable would refuse the value and the service would never start (this happened
+/// in 0.3.2). Run the real binary far enough to parse its arguments.
+#[test]
+fn the_values_installs_already_set_are_accepted_by_every_command() {
+    for value in ["1", "true", "yes", "0", "false"] {
+        let dir =
+            std::env::temp_dir().join(format!("ipping-node-env-{value}-{}", std::process::id()));
+        let output = Command::new(env!("CARGO_BIN_EXE_ipping-node"))
+            .env("IPPING_NODE_ALLOW_INSECURE", value)
+            .args(["--state-dir", dir.to_str().unwrap(), "run"])
+            .output()
+            .expect("the binary runs");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!error.contains("invalid value"), "{value}: {error}");
+        assert!(
+            error.contains("not enrolled yet"),
+            "{value}: it should get as far as the state: {error}"
+        );
+    }
 }

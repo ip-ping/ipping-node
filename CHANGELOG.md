@@ -4,6 +4,21 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.3.3 (2026-11-06)
+
+### fix: v0.3.2 refused to start on any install that allows plain http://
+- v0.3.2 made `--insecure` a command-line flag *bound to* `IPPING_NODE_ALLOW_INSECURE`. A boolean
+  flag only accepts `true`/`false`, and every install made with `--allow-insecure` sets that variable
+  to `1` in its systemd unit or `.env`, so the service died at start with `invalid value '1' for
+  '--insecure'`. It was caught the same day by installing the released v0.3.2 on a fresh Debian 13
+  machine and reproducing the report that led to it; v0.3.2 was marked a prerelease (so the stable
+  link served v0.3.1 again) before this release.
+- The flag no longer reads the variable; the node itself reads `IPPING_NODE_ALLOW_INSECURE`, and now
+  accepts `1`, `true` and `yes`. The test that should have caught it only checked that the node
+  did not print the refusal (a parse error does not); there is now one that runs every command with
+  the values installs actually set (`1`, `true`, `yes`, `0`, `false`) and requires the node to reach
+  its own logic. Everything else in v0.3.2 (state ownership, `--insecure`, narrow terminals) stands.
+
 ## v0.3.2 (2026-11-06)
 
 ### `--insecure`

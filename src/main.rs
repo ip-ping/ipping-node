@@ -21,13 +21,10 @@ struct Cli {
     state_dir: PathBuf,
 
     /// Allow a plain http:// backend on another host. The node's credential then travels
-    /// unencrypted, so only use this on a network you trust. Same as IPPING_NODE_ALLOW_INSECURE=1.
-    #[arg(
-        long,
-        alias = "allow-insecure",
-        env = "IPPING_NODE_ALLOW_INSECURE",
-        global = true
-    )]
+    /// unencrypted, so only use this on a network you trust. Same as IPPING_NODE_ALLOW_INSECURE=1
+    /// (that variable is read by the node itself, not by this flag: existing installs set it to 1,
+    /// which a boolean flag's own parser would refuse).
+    #[arg(long, alias = "allow-insecure", global = true)]
     insecure: bool,
 
     #[command(subcommand)]
