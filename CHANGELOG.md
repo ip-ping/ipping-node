@@ -9,6 +9,14 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 TCP, HTTP and traceroute checks, a port allowlist, and an installer fixed for Debian 13 with a guided
 interface. Needs backend v0.3.0 for the new kinds; works with older backends for ping.
 
+### 2026-11-06: the traceroute test was flaky for a real reason
+- One CI run of the namespace test saw 2 answers to 3 probes at a hop. Reproduced locally (1 run in 12)
+  and traced: a stress run showed that only router replies were lost, only when probes were sent
+  together, and the router's `OutRateLimitGlobal` counter was 8 (the kernel allows 1000 ICMP errors a
+  second with a burst of 50). The node was right, the lab was rate-limiting: real routers do the same,
+  which is what three probes per hop are for. The lab now raises that limit and the test asks for at
+  least one answer per hop.
+
 ### 2026-11-06: IPv6 checked as far as this machine allows
 - TCP and HTTP are exercised over the IPv6 loopback (connect, refusal, a request with a bracketed
   `Host`), and traceroute over IPv6 through real routers in namespaces. What has *not* been tested is

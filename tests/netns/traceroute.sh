@@ -55,8 +55,11 @@ ip -n "$NS_DST" -6 route add default via fd00:3::1
 
 for ns in "$NS_R1" "$NS_R2"; do
   ip netns exec "$ns" sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-  # Routers rate-limit the ICMP errors they send; the test sends three probes per hop at once.
-  ip netns exec "$ns" sysctl -qw net.ipv4.icmp_ratelimit=0 net.ipv6.icmp.ratelimit=0
+  # Routers rate-limit the ICMP errors they send (per peer, and globally: 1000 a second with a burst
+  # of 50), and the test sends three probes per hop at once. Real routers do this too, which is why
+  # a hop gets three probes; the lab just should not be the one to drop them.
+  ip netns exec "$ns" sysctl -qw net.ipv4.icmp_ratelimit=0 net.ipv6.icmp.ratelimit=0 \
+    net.ipv4.icmp_msgs_per_sec=100000 net.ipv4.icmp_msgs_burst=100000
 done
 # The test user must be allowed to open ping sockets (what `ping` itself relies on).
 ip netns exec "$NS_SRC" sysctl -qw net.ipv4.ping_group_range="0 2147483647"

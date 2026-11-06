@@ -148,10 +148,13 @@ async fn through_real_routers_in_network_namespaces() {
         assert_eq!(detail["ip"], *router, "hop {}", index + 1);
         assert_eq!(detail["reached"], false);
         assert!(rtt.unwrap() > 0 && rtt.unwrap() < 1_000_000);
-        assert_eq!(
-            detail["rtts_us"].as_array().unwrap().len(),
-            3,
-            "all three probes were answered"
+        // A router may rate-limit the ICMP errors it sends (the kernel's global limit did drop one
+        // of three in a burst), which is why a hop gets three probes. One answer is a hop.
+        let answered = detail["rtts_us"].as_array().unwrap().len();
+        assert!(
+            (1..=3).contains(&answered),
+            "hop {}: {answered} of 3 probes answered",
+            index + 1
         );
     }
     let (_, status, rtt, last) = samples.last().unwrap();
