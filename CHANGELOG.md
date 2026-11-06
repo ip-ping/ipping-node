@@ -4,6 +4,20 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: a nicer installer
+- Guided install: Docker or direct, where your ipping site is (checked to be reachable before anything
+  changes, with a warning and a safe default for plain HTTP), the enrollment token typed without echo,
+  the node's name and location, then a summary to confirm.
+- Progress for every step with the command output kept in `/var/log/ipping-node-install.log` and
+  shown only on failure; a summary box; `status` shows the service, the site and whether the site has
+  approved the node yet; `doctor` explains what to try for each failing check; a menu that shows the
+  current state.
+- A failed install can be run again: a mistyped token no longer leaves the node marked "installed".
+- Country codes are validated and upper-cased; the site address and `--version` are validated before
+  sudo is requested.
+- Verified through a real terminal emulator on fresh Debian 13 machines: direct and Docker installs,
+  a bad token then a retry, an unreachable address, plain HTTP without `--allow-insecure`.
+
 ### 2026-11-06: fix: installing Docker on Debian 13 broke the release lookup
 - The installer *sourced* `/etc/os-release` into its own shell, and that file defines `VERSION`
   (Debian 13: `13 (trixie)`) and `NAME` (the node's own display name, so a Docker install on Debian also renamed the node to "Debian GNU/Linux"). Whenever Docker had to be installed, `VERSION` became the release to

@@ -40,6 +40,13 @@ sudo bash ipping-node.sh status | logs | doctor | restart | update | uninstall
 That link always serves the installer of the newest tagged release; the unreleased one from `main` is
 at `https://github.com/ip-ping/ipping-node/releases/download/edge/ipping-node.sh`. Releases are
 cut as described in [RELEASING.md](https://github.com/ip-ping/ipping/blob/main/RELEASING.md).
+Run it with no options and it guides you: how to run the node, where your ipping site is (it checks
+the site answers before changing anything), the enrollment token (typed without echo), the node's
+name and location, then a summary to confirm. Each step shows progress; the output of the commands
+behind it goes to `/var/log/ipping-node-install.log` and is shown only if a step fails.
+`status` also tells you whether the site has approved the node yet. An install that fails part-way
+(a mistyped token, say) can simply be run again.
+
 Run it without arguments for an interactive menu. Installs are repeatable (a second run keeps the
 node's identity), updates keep the previous release for rollback and roll back by themselves if the
 new one does not start, and `uninstall` keeps the node's identity unless you add `--purge`.

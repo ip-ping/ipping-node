@@ -45,17 +45,230 @@ BINARY_OVERRIDE=""
 # Helpers
 # ------------------------------------------------------------------------------------------------
 
-if [ -t 1 ]; then
-  BOLD=$'\033[1m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; GREEN=$'\033[32m'; RESET=$'\033[0m'
-else
-  BOLD=""; RED=""; YELLOW=""; GREEN=""; RESET=""
-fi
+# ------------------------------------------------------------------------------------------------
+# Terminal interface
+#
+# These helpers are shared with the other ipping installer and kept identical in both. Colour,
+# symbols and the spinner appear only on a terminal that can show them (NO_COLOR is honoured); in a
+# pipe or a log file the same information is printed as plain lines. Slow commands go through `run`:
+# their output is written to a log file and shown only if the command fails.
+# ------------------------------------------------------------------------------------------------
 
-step() { printf '%s==>%s %s\n' "$BOLD" "$RESET" "$*"; }
-info() { printf '    %s\n' "$*"; }
-warn() { printf '%sWarning:%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
-ok()   { printf '%s%s%s\n' "$GREEN" "$*" "$RESET"; }
-die()  { printf '%sError:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+UI_LOG="/dev/null"
+UI_SPINNER_PID=""
+
+ui_init() {
+  UI_TTY=0; UI_COLOR=0; UI_UNICODE=0
+  if [ -t 1 ]; then UI_TTY=1; fi
+  if [ "$UI_TTY" -eq 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then UI_COLOR=1; fi
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UI_UNICODE=1 ;; esac
+  if [ "$UI_TTY" -eq 0 ]; then UI_UNICODE=0; fi
+  UI_WIDTH="${COLUMNS:-}"
+  case "$UI_WIDTH" in '' | *[!0-9]*) UI_WIDTH="$(tput cols 2>/dev/null || echo 80)" ;; esac
+  if [ "$UI_WIDTH" -lt 60 ]; then UI_WIDTH=60; fi
+  if [ "$UI_WIDTH" -gt 100 ]; then UI_WIDTH=100; fi
+  if [ "$UI_COLOR" -eq 1 ]; then
+    C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'; C_RESET=$'\033[0m'
+  else
+    C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""; C_RESET=""
+  fi
+  if [ "$UI_UNICODE" -eq 1 ]; then
+    S_OK="✔"; S_FAIL="✖"; S_WARN="!"; S_STEP="▸"; S_UP="●"; S_DOWN="○"; S_SEP="·"
+    S_H="─"; S_V="│"; S_TL="┌"; S_TR="┐"; S_BL="└"; S_BR="┘"
+    UI_SPIN=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  else
+    S_OK="ok"; S_FAIL="!!"; S_WARN="!"; S_STEP="==>"; S_UP="*"; S_DOWN="-"; S_SEP="-"
+    S_H="-"; S_V="|"; S_TL="+"; S_TR="+"; S_BL="+"; S_BR="+"
+    UI_SPIN=("-" "\\" "|" "/")
+  fi
+}
+ui_init
+
+ui_rule() {
+  local width=$UI_WIDTH line="" i
+  if [ "$width" -gt 64 ]; then width=64; fi
+  for ((i = 0; i < width; i++)); do line+="$S_H"; done
+  printf '%s%s%s\n' "$C_DIM" "$line" "$C_RESET"
+}
+
+banner() { # banner TITLE [SUBTITLE]
+  printf '\n%s%s%s' "$C_BOLD" "$1" "$C_RESET"
+  if [ -n "${2:-}" ]; then printf '  %s%s%s' "$C_DIM" "$2" "$C_RESET"; fi
+  printf '\n'
+  ui_rule
+}
+
+step() { printf '\n%s%s%s %s%s%s\n' "$C_CYAN" "$S_STEP" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
+info() { printf '  %s\n' "$*"; }
+note() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_RESET"; }
+# para INDENT TEXT   dim text, wrapped at word boundaries to the width of the terminal.
+para() {
+  local pad="" i
+  for ((i = 0; i < $1; i++)); do pad+=" "; done
+  printf '%s\n' "$2" | fold -s -w $((UI_WIDTH - $1 - 1)) | sed "s/ *$//; s/^/${pad}/; s/^\(.*\)\$/${C_DIM}\1${C_RESET}/"
+}
+tick() { printf '  %s%s%s %s\n' "$C_GREEN" "$S_OK" "$C_RESET" "$*"; }
+warn() { printf '  %s%s%s %s\n' "$C_YELLOW" "$S_WARN" "$C_RESET" "$*" >&2; }
+ok() { printf '\n%s%s%s %s%s%s\n' "$C_GREEN" "$S_OK" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
+die() { printf '\n%s%s%s %s\n' "$C_RED" "$S_FAIL" "$C_RESET" "$*" >&2; exit 1; }
+
+# The file that collects the output of commands run through `run`.
+ui_log_init() { # ui_log_init DEFAULT_PATH
+  UI_LOG="${IPPING_LOG:-$1}"
+  if ! { mkdir -p "$(dirname "$UI_LOG")" && : >>"$UI_LOG"; } 2>/dev/null; then UI_LOG="$(mktemp)"; fi
+  chmod 600 "$UI_LOG" 2>/dev/null || true
+  printf '\n===== %s  %s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(basename "$0")" >>"$UI_LOG"
+}
+
+ui_log_tail() {
+  if [ "$UI_LOG" = "/dev/null" ] || [ ! -f "$UI_LOG" ]; then return 0; fi
+  printf '\n  %slast lines of the output (everything is in %s):%s\n' "$C_DIM" "$UI_LOG" "$C_RESET" >&2
+  tail -n 15 "$UI_LOG" | sed 's/^/    /' >&2
+}
+
+ui_spin_start() {
+  UI_SPINNER_PID=""
+  if [ "$UI_TTY" -ne 1 ]; then return 0; fi
+  printf '\033[?25l'
+  (
+    i=0
+    n=${#UI_SPIN[@]}
+    while :; do
+      printf '\r  %s%s%s %s' "$C_CYAN" "${UI_SPIN[i % n]}" "$C_RESET" "$1"
+      i=$((i + 1))
+      sleep 0.1
+    done
+  ) &
+  UI_SPINNER_PID=$!
+}
+
+ui_spin_stop() {
+  if [ -n "$UI_SPINNER_PID" ]; then
+    kill "$UI_SPINNER_PID" 2>/dev/null || true
+    wait "$UI_SPINNER_PID" 2>/dev/null || true
+    UI_SPINNER_PID=""
+    printf '\r\033[K\033[?25h'
+  fi
+}
+
+# run_soft "what this does" command args...   shows progress, returns the command's exit status.
+# The command must be a program (or a function that is a single command): a function with several
+# commands loses `set -e` inside it here, because it is called as part of a `||` list.
+run_soft() {
+  local what="$1" start=$SECONDS rc=0 took suffix=""
+  shift
+  printf '\n-- %s\n' "$what" >>"$UI_LOG"
+  ui_spin_start "$what"
+  "$@" >>"$UI_LOG" 2>&1 </dev/null || rc=$?
+  ui_spin_stop
+  took=$((SECONDS - start))
+  if [ "$took" -ge 3 ]; then suffix=" ${C_DIM}(${took}s)${C_RESET}"; fi
+  if [ "$rc" -eq 0 ]; then
+    printf '  %s%s%s %s%s\n' "$C_GREEN" "$S_OK" "$C_RESET" "$what" "$suffix"
+  else
+    printf '  %s%s%s %s%s\n' "$C_RED" "$S_FAIL" "$C_RESET" "$what" "$suffix"
+  fi
+  return "$rc"
+}
+
+# run "what this does" command args...   as run_soft, but a failure ends the installer.
+run() {
+  local what="$1"
+  if run_soft "$@"; then return 0; fi
+  ui_log_tail
+  die "${what} failed."
+}
+
+# box "Title" "line" ...   a framed block. Lines are plain text: their width is measured.
+box() {
+  local title="$1" line w i bar="" tbar="" color="${UI_BOX_COLOR:-$C_GREEN}"
+  shift
+  w=$((${#title} + 2))
+  for line in "$@"; do if [ "${#line}" -gt "$w" ]; then w=${#line}; fi; done
+  for ((i = 0; i < w + 2; i++)); do bar+="$S_H"; done
+  for ((i = 0; i < w - ${#title} - 1; i++)); do tbar+="$S_H"; done
+  printf '\n%s%s%s %s%s%s%s %s%s%s\n' "$color" "$S_TL" "$S_H" "$C_BOLD" "$title" "$C_RESET" "$color" "$tbar" "$S_TR" "$C_RESET"
+  for line in "$@"; do
+    printf '%s%s%s %-*s %s%s%s\n' "$color" "$S_V" "$C_RESET" "$w" "$line" "$color" "$S_V" "$C_RESET"
+  done
+  printf '%s%s%s%s%s\n' "$color" "$S_BL" "$bar" "$S_BR" "$C_RESET"
+}
+
+# prompt VAR "Question" [DEFAULT] [VALIDATOR] [HINT]
+# Skipped when VAR already has a value (it came from the command line) or there is no terminal.
+prompt() {
+  local var="$1" question="$2" default="${3:-}" validator="${4:-}" hint="${5:-}" answer
+  if [ -n "${!var}" ] || ! is_interactive; then return 0; fi
+  while :; do
+    printf '\n%s%s%s\n' "$C_BOLD" "$question" "$C_RESET"
+    if [ -n "$hint" ]; then para 2 "$hint"; fi
+    if [ -n "$default" ]; then printf '  %s>%s %s[%s]%s ' "$C_CYAN" "$C_RESET" "$C_DIM" "$default" "$C_RESET"; else printf '  %s>%s ' "$C_CYAN" "$C_RESET"; fi
+    read -r answer || answer=""
+    answer="${answer:-$default}"
+    if [ -z "$validator" ] || "$validator" "$answer"; then
+      printf -v "$var" '%s' "$answer"
+      return 0
+    fi
+    warn "That does not look right. Try again."
+  done
+}
+
+# prompt_secret VAR "Question" [HINT]   like prompt, but what is typed is not shown.
+prompt_secret() {
+  local var="$1" question="$2" hint="${3:-}" answer
+  if [ -n "${!var}" ] || ! is_interactive; then return 0; fi
+  while :; do
+    printf '\n%s%s%s\n' "$C_BOLD" "$question" "$C_RESET"
+    if [ -n "$hint" ]; then para 2 "$hint"; fi
+    printf '  %s>%s ' "$C_CYAN" "$C_RESET"
+    read -r -s answer || answer=""
+    printf '\n'
+    if [ -n "$answer" ]; then printf -v "$var" '%s' "$answer"; return 0; fi
+    warn "Nothing was entered."
+  done
+}
+
+# choose VAR "Question" DEFAULT_NUMBER "Label|Description" ...   VAR becomes the chosen number.
+choose() {
+  local var="$1" question="$2" default="$3" item answer n=0
+  shift 3
+  if ! is_interactive; then return 0; fi
+  printf '\n%s%s%s\n' "$C_BOLD" "$question" "$C_RESET"
+  for item in "$@"; do
+    n=$((n + 1))
+    printf '  %s%d%s  %s\n' "$C_CYAN" "$n" "$C_RESET" "${item%%|*}"
+    if [ "$item" != "${item#*|}" ]; then para 5 "${item#*|}"; fi
+  done
+  while :; do
+    printf '  %s>%s %s[%s]%s ' "$C_CYAN" "$C_RESET" "$C_DIM" "$default" "$C_RESET"
+    read -r answer || answer=""
+    answer="${answer:-$default}"
+    if [[ $answer =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "$n" ]; then
+      printf -v "$var" '%s' "$answer"
+      return 0
+    fi
+    warn "Enter a number from 1 to ${n}."
+  done
+}
+
+# confirm "Question" [y|n]   the default answer is the second argument (y when omitted).
+confirm() {
+  if ! is_interactive; then return 0; fi
+  local default="${2:-y}" hint="Y/n" reply
+  if [ "$default" = n ]; then hint="y/N"; fi
+  printf '\n%s%s%s %s[%s]%s ' "$C_BOLD" "$1" "$C_RESET" "$C_DIM" "$hint" "$C_RESET"
+  read -r reply || reply=""
+  reply="${reply:-$default}"
+  case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+# A host name such as ping.example.com (empty is allowed: it means "no domain").
+valid_domain() {
+  if [ -z "$1" ]; then return 0; fi
+  local pattern='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+  [[ ${#1} -le 253 && $1 =~ $pattern ]]
+}
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -64,27 +277,6 @@ need_root() {
 }
 
 is_interactive() { [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; }
-
-confirm() {
-  # confirm "question" -> true when yes. Non-interactive runs (or --yes) accept the default of yes.
-  if ! is_interactive; then return 0; fi
-  local reply
-  read -r -p "$1 [Y/n] " reply
-  case "${reply:-y}" in [Yy]*) return 0 ;; *) return 1 ;; esac
-}
-
-ask() {
-  # ask VAR "prompt" [secret]; leaves VAR alone when it is already set or there is no terminal.
-  local var="$1" prompt="$2" secret="${3:-}" current
-  current="${!var}"
-  if [ -n "$current" ] || ! is_interactive; then return 0; fi
-  if [ -n "$secret" ]; then
-    read -r -s -p "$prompt: " current; echo
-  else
-    read -r -p "$prompt: " current
-  fi
-  printf -v "$var" '%s' "$current"
-}
 
 detect_arch() {
   case "$(uname -m)" in
@@ -106,7 +298,10 @@ require_mode() {
 }
 
 TMP_DIRS=()
-cleanup() { [ "${#TMP_DIRS[@]}" -eq 0 ] || rm -rf "${TMP_DIRS[@]}"; }
+cleanup() {
+  ui_spin_stop
+  if [ "${#TMP_DIRS[@]}" -gt 0 ]; then rm -rf "${TMP_DIRS[@]}"; fi
+}
 trap cleanup EXIT
 
 make_temp_dir() {
@@ -139,14 +334,13 @@ download_verified_binary() {
   arch="$(detect_arch)"
   asset="ipping-node-linux-${arch}"
   tmp="$(make_temp_dir)"
-  step "Downloading ${asset} ${tag}"
-  curl -fsSL "${RELEASE_BASE}/${tag}/${asset}" -o "${tmp}/${asset}" || die "Could not download ${asset} for ${tag}."
+  run "Downloading ipping-node ${tag} (${arch})" curl -fsSL "${RELEASE_BASE}/${tag}/${asset}" -o "${tmp}/${asset}"
   curl -fsSL "${RELEASE_BASE}/${tag}/SHA256SUMS" -o "${tmp}/SHA256SUMS" || die "Could not download SHA256SUMS for ${tag}."
   expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS" | head -n 1)"
   [ -n "$expected" ] || die "SHA256SUMS has no entry for ${asset}."
   actual="$(sha256sum "${tmp}/${asset}" | awk '{ print $1 }')"
   [ "$expected" = "$actual" ] || die "Checksum mismatch for ${asset} (expected ${expected}, got ${actual}). Nothing was installed."
-  info "checksum verified (${actual})"
+  tick "Checked it against the release's published checksum"
   install -m 0755 "${tmp}/${asset}" "$dest"
 }
 
@@ -177,22 +371,33 @@ os_release() {
     printf '%s' "${!1:-}" )
 }
 
+APT_UPDATED=0
+
+apt_install() {
+  # apt_install PACKAGE... : the package lists are refreshed once, unless something changed them.
+  command_exists apt-get || die "Missing: $*. Automatic installation of system packages supports Debian and Ubuntu only."
+  if [ "$APT_UPDATED" -eq 0 ]; then
+    run "Updating the package lists" env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    APT_UPDATED=1
+  fi
+  run "Installing ${APT_LABEL:-$*}" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@"
+}
+
 install_docker_if_missing() {
   if command_exists docker && docker compose version >/dev/null 2>&1; then return; fi
   command_exists apt-get || die "Docker with the compose plugin is required. Install it (https://docs.docker.com/engine/install/) and run this again."
-  confirm "Docker (with the compose plugin) is not installed. Install it from Docker's apt repository?" \
-    || die "Docker is required for --mode docker."
-  step "Installing Docker from Docker's apt repository"
   local distro codename
   distro="$(os_release ID)"
   codename="$(os_release UBUNTU_CODENAME)"
   codename="${codename:-$(os_release VERSION_CODENAME)}"
   case "$distro" in ubuntu | debian) ;; *) die "Automatic Docker installation supports Debian and Ubuntu; install Docker manually." ;; esac
   [ -n "$codename" ] || die "Could not tell which release of ${distro} this is (no codename in /etc/os-release)."
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl >/dev/null
+  confirm "Docker is not installed. Install it from Docker's apt repository?" \
+    || die "Docker is required for --mode docker."
+  step "Installing Docker"
+  apt_install ca-certificates curl
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
+  run "Adding Docker's package signing key" curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
@@ -202,8 +407,8 @@ Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
+  APT_UPDATED=0   # a new package source: the lists have to be refreshed again
+  APT_LABEL="Docker Engine and the compose plugin" apt_install docker-ce docker-ce-cli containerd.io docker-compose-plugin
   systemctl enable --now docker >/dev/null 2>&1 || true
 }
 
@@ -233,34 +438,97 @@ volumes:
 EOF
 }
 
+node_recent_log() {
+  case "$(installed_mode)" in
+    direct) journalctl -u "$SERVICE" -n 60 --no-pager -o cat 2>/dev/null || true ;;
+    docker) compose logs --tail 60 --no-color 2>/dev/null || true ;;
+  esac
+}
+
+wait_for_node_log() { # wait_for_node_log TEXT SECONDS
+  local waited=0 logs
+  while [ "$waited" -lt "$2" ]; do
+    logs="$(node_recent_log)"
+    case "$logs" in *"$1"*) return 0 ;; esac
+    sleep 1; waited=$((waited + 1))
+  done
+  return 1
+}
+
+# What the node says about itself, in words.
+node_approval() {
+  local last
+  last="$(node_recent_log | grep -E 'approved; ready for tasks|waiting for an administrator|refused this node|session ended' | tail -n 1 || true)"
+  case "$last" in
+    *"approved; ready"*) echo "approved, ready for work" ;;
+    *"waiting for an administrator"*) echo "waiting for an administrator to approve it" ;;
+    *"refused this node"*) echo "refused by the site (revoked, or its key was rotated)" ;;
+    *"session ended"*) echo "reconnecting" ;;
+    *) echo "connecting" ;;
+  esac
+}
+
 env_value() { grep -E "^$1=" "${APP_DIR}/.env" 2>/dev/null | head -n 1 | cut -d= -f2- || true; }
 
 # ------------------------------------------------------------------------------------------------
 # install
 # ------------------------------------------------------------------------------------------------
 
-collect_enrollment_details() {
-  ask SERVER "Backend address (for example https://ping.example.com)"
-  [ -n "$SERVER" ] || die "--server is required."
-  ask TOKEN "Enrollment token (from the admin page)" secret
-  ask NAME "Name for this node [$(hostname)]"
+# A backend address: http(s)://host[:port], nothing else (no path, no credentials).
+valid_server() {
+  local pattern='^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$'
+  [[ ${#1} -le 253 && $1 =~ $pattern ]]
+}
+
+valid_country() { [ -z "$1" ] || [[ $1 =~ ^[A-Za-z]{2}$ ]]; }
+
+valid_node_name() { [ -n "$1" ] && [ "${#1}" -le 100 ]; }
+
+is_local_address() {
+  case "${1#*://}" in localhost | localhost:* | 127.* | "[::1]"*) return 0 ;; *) return 1 ;; esac
+}
+
+describe_server() { printf '%s' "${SERVER%/}"; }
+
+enrollment_questions() {
+  # Everything the node needs to join, asked up front. Values given on the command line are not asked again.
+  if [ -z "$SERVER" ]; then
+    prompt SERVER "Where is your ipping site?" "" valid_server \
+      "The address you open in the browser, for example https://ping.example.com (the node connects to it; it never listens for connections)."
+  fi
+  [ -n "$SERVER" ] || die "Say where the ipping site is with --server https://your-site."
+  valid_server "$SERVER" || die "'${SERVER}' is not a site address. Use the form https://ping.example.com (no path)."
+  SERVER="${SERVER%/}"
+  if [ "${SERVER#http://}" != "$SERVER" ] && ! is_local_address "$SERVER" && [ "$ALLOW_INSECURE" -eq 0 ]; then
+    if is_interactive; then
+      warn "${SERVER} uses plain HTTP, so this node's credential would travel unencrypted."
+      confirm "Continue anyway? (only do this on a network you trust)" n || die "Use an https:// address, or add --allow-insecure."
+      ALLOW_INSECURE=1
+    else
+      die "${SERVER} uses plain HTTP, which would send this node's credential unencrypted. Use https://, or add --allow-insecure."
+    fi
+  fi
+  prompt_secret TOKEN "Enrollment token" "Create one in the admin page: Admin > Enrollment > Create enrollment token. It works once and then expires."
+  prompt NAME "What should this node be called?" "$(hostname)" valid_node_name "Shown on the public node list and in results."
   NAME="${NAME:-$(hostname)}"
-  ask COUNTRY "Two-letter country code (optional)"
-  ask CITY "City (optional)"
+  prompt COUNTRY "Which country is this node in? (two letters, for example DE)" "" valid_country \
+    "Optional. An administrator can correct it later; results are placed on a map from it."
+  prompt CITY "Which city?" "" "" "Optional."
+  COUNTRY="$(printf '%s' "$COUNTRY" | tr '[:lower:]' '[:upper:]')"
+}
+
+collect_enrollment_details() {
+  # Enrollment is only needed the first time; a node that already has its credential keeps it.
+  [ -n "$TOKEN" ] || die "An enrollment token is needed the first time: pass --token (create one in the admin page)."
 }
 
 install_docker_mode() {
   install_docker_if_missing
   local existing="no"
-  [ -f "${APP_DIR}/.env" ] && existing="yes"
-  if [ "$existing" = "no" ]; then
-    collect_enrollment_details
-    [ -n "$TOKEN" ] || die "--token is required for the first install."
-  else
-    info "Existing configuration found in ${APP_DIR}/.env; keeping it."
-  fi
+  if [ -f "${APP_DIR}/.env" ]; then existing="yes"; fi
+  if [ "$existing" = "yes" ]; then note "Keeping the configuration already in ${APP_DIR}/.env."; fi
 
-  step "Writing ${APP_DIR}"
+  step "Setting up ${APP_DIR}"
   install -d -m 0750 "$APP_DIR"
   write_compose_file
   local image_ref="${IMAGE}:latest"
@@ -273,10 +541,10 @@ install_docker_mode() {
         echo "IPPING_NODE_SERVER=${SERVER}"
         echo "IPPING_NODE_ENROLL_TOKEN=${TOKEN}"
         echo "IPPING_NODE_NAME=${NAME}"
-        [ -z "$COUNTRY" ] || echo "IPPING_NODE_COUNTRY=${COUNTRY}"
-        [ -z "$CITY" ] || echo "IPPING_NODE_CITY=${CITY}"
-        [ -z "$PROVIDER" ] || echo "IPPING_NODE_PROVIDER=${PROVIDER}"
-        [ "$ALLOW_INSECURE" -eq 0 ] || echo "IPPING_NODE_ALLOW_INSECURE=1"
+        if [ -n "$COUNTRY" ]; then echo "IPPING_NODE_COUNTRY=${COUNTRY}"; fi
+        if [ -n "$CITY" ]; then echo "IPPING_NODE_CITY=${CITY}"; fi
+        if [ -n "$PROVIDER" ]; then echo "IPPING_NODE_PROVIDER=${PROVIDER}"; fi
+        if [ "$ALLOW_INSECURE" -ne 0 ]; then echo "IPPING_NODE_ALLOW_INSECURE=1"; fi
         echo "IPPING_NODE_IMAGE=${image_ref}"
       } >"${APP_DIR}/.env"
     )
@@ -284,21 +552,19 @@ install_docker_mode() {
     echo "IPPING_NODE_IMAGE=${image_ref}" >>"${APP_DIR}/.env"
   fi
   chmod 600 "${APP_DIR}/.env"
-  echo docker >"$MODE_FILE"
+  tick "Wrote ${APP_DIR}/.env (readable by root only)"
 
-  step "Starting the node container"
-  compose pull --quiet || warn "Could not pull ${image_ref}; continuing with a local copy if there is one."
-  compose up -d
+  step "Starting the node"
+  run_soft "Downloading the image" compose pull --quiet \
+    || warn "Could not download ${image_ref}; continuing with a local copy if there is one."
+  run "Starting the container" compose up -d
+  echo docker >"$MODE_FILE"   # only now is it "installed": a failure before this can simply be retried
 
   if [ "$existing" = "no" ]; then
     # The token is single-use and the node now holds its own credential in the state volume, so
     # it does not need to stay on disk.
-    local waited=0 logs
-    while [ "$waited" -lt 30 ]; do
-      logs="$(compose logs --no-color 2>/dev/null || true)"
-      case "$logs" in *connected*) break ;; esac
-      sleep 1; waited=$((waited + 1))
-    done
+    run_soft "Waiting for the node to connect" wait_for_node_log connected 30 \
+      || warn "The node has not connected yet. Look at: sudo bash $0 logs"
     sed -i 's/^IPPING_NODE_ENROLL_TOKEN=.*/IPPING_NODE_ENROLL_TOKEN=/' "${APP_DIR}/.env"
   fi
   finish_message
@@ -376,27 +642,25 @@ install_direct_mode() {
   command_exists sha256sum || die "sha256sum is required (coreutils)."
 
   local tag releases_dir binary enrolled="no"
-  [ -f "${STATE_DIR}/credential" ] && enrolled="yes"
-  if [ "$enrolled" = "no" ]; then
-    collect_enrollment_details
-    [ -n "$TOKEN" ] || die "--token is required for the first install."
-  else
-    info "This node is already enrolled; keeping its credential."
-  fi
+  if [ -f "${STATE_DIR}/credential" ]; then enrolled="yes"; fi
+  if [ "$enrolled" = "yes" ]; then note "This node is already enrolled; keeping its credential."; fi
 
-  step "Creating the service account and directories"
+  step "Preparing this machine"
   if ! id "$RUN_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
   fi
   install -d -m 0755 "$APP_DIR"
   install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "$STATE_DIR"
+  tick "An unprivileged account (${RUN_USER}) and a private state directory"
 
+  step "Getting ipping-node"
   if [ -n "$BINARY_OVERRIDE" ]; then
     tag="local"
     [ -x "$BINARY_OVERRIDE" ] || die "--binary ${BINARY_OVERRIDE} is not an executable file."
     releases_dir="${APP_DIR}/releases/${tag}"
     install -d -m 0755 "$releases_dir"
     install -m 0755 "$BINARY_OVERRIDE" "${releases_dir}/ipping-node"
+    tick "Using ${BINARY_OVERRIDE}"
   else
     tag="$(resolve_version)"
     releases_dir="${APP_DIR}/releases/${tag}"
@@ -408,38 +672,60 @@ install_direct_mode() {
 
   ln -sfn "$releases_dir" "${APP_DIR}/current"
   ln -sfn "${APP_DIR}/current/ipping-node" "$BIN_LINK"
-  echo direct >"$MODE_FILE"
 
   if [ "$enrolled" = "no" ]; then
-    step "Enrolling this node with ${SERVER}"
+    step "Joining ${SERVER}"
     # The token goes through the environment, not the command line, so it never shows up in `ps`.
     local enroll_env=("IPPING_NODE_ENROLL_TOKEN=${TOKEN}" "IPPING_NODE_SERVER=${SERVER}" "IPPING_NODE_NAME=${NAME}")
-    [ -z "$COUNTRY" ] || enroll_env+=("IPPING_NODE_COUNTRY=${COUNTRY}")
-    [ -z "$CITY" ] || enroll_env+=("IPPING_NODE_CITY=${CITY}")
-    [ -z "$PROVIDER" ] || enroll_env+=("IPPING_NODE_PROVIDER=${PROVIDER}")
-    [ "$ALLOW_INSECURE" -eq 0 ] || enroll_env+=("IPPING_NODE_ALLOW_INSECURE=1")
-    runuser -u "$RUN_USER" -- env "${enroll_env[@]}" "$binary" --state-dir "$STATE_DIR" enroll \
-      || die "Enrollment failed. Nothing was started."
+    if [ -n "$COUNTRY" ]; then enroll_env+=("IPPING_NODE_COUNTRY=${COUNTRY}"); fi
+    if [ -n "$CITY" ]; then enroll_env+=("IPPING_NODE_CITY=${CITY}"); fi
+    if [ -n "$PROVIDER" ]; then enroll_env+=("IPPING_NODE_PROVIDER=${PROVIDER}"); fi
+    if [ "$ALLOW_INSECURE" -ne 0 ]; then enroll_env+=("IPPING_NODE_ALLOW_INSECURE=1"); fi
+    run "Enrolling this node" runuser -u "$RUN_USER" -- env "${enroll_env[@]}" "$binary" --state-dir "$STATE_DIR" enroll
   fi
 
-  step "Installing the systemd service"
+  step "Starting the service"
   write_unit_file
   systemctl daemon-reload
-  systemctl enable "$SERVICE" >/dev/null 2>&1
-  systemctl restart "$SERVICE"
-  sleep 2
-  systemctl is-active --quiet "$SERVICE" || {
-    journalctl -u "$SERVICE" --no-pager -n 20 2>/dev/null || true
-    die "The service did not start. See the log above (journalctl -u ${SERVICE})."
-  }
+  run "Enabling the service at boot" systemctl enable "$SERVICE"
+  run "Starting the service" systemctl restart "$SERVICE"
+  echo direct >"$MODE_FILE"   # only now is it "installed": a failure before this can simply be retried
+  run_soft "Checking that it stays up" wait_for_active 5 \
+    || { journalctl -u "$SERVICE" --no-pager -n 20 2>/dev/null || true; die "The service did not start. See the log above (journalctl -u ${SERVICE})."; }
   finish_message
 }
 
+wait_for_active() { # wait_for_active SECONDS: the service must be active for this long without restarting
+  local i
+  for ((i = 0; i < $1; i++)); do
+    sleep 1
+    systemctl is-active --quiet "$SERVICE" || return 1
+  done
+}
+
+node_id() { sed -n 's/.*"node_id": *"\([^"]*\)".*/\1/p' "${STATE_DIR}/node.json" 2>/dev/null | head -n 1; }
+
+node_server() {
+  if [ "$(installed_mode)" = direct ]; then
+    sed -n 's/.*"server": *"\([^"]*\)".*/\1/p' "${STATE_DIR}/node.json" 2>/dev/null | head -n 1
+  else
+    env_value IPPING_NODE_SERVER
+  fi
+}
+
 finish_message() {
-  echo
-  ok "ipping-node is running."
-  info "A new node waits for approval: open the admin page of your ipping site, Nodes tab, and approve it."
-  info "Check on it with: bash $0 status    |    bash $0 logs    |    bash $0 doctor"
+  local server
+  server="$(node_server)"
+  box "ipping-node is running" \
+    "" \
+    "Site     ${server:-${SERVER}}" \
+    "Node     ${NAME:-$(hostname)}" \
+    "Status   $(node_approval)" \
+    ""
+  printf '\n%sNext%s\n' "$C_BOLD" "$C_RESET"
+  info "Open the admin page of your ipping site, go to Nodes, and approve this node."
+  info "It starts receiving measurements as soon as you do."
+  printf '\n%sLater%s   sudo bash %s status | doctor | logs | update\n' "$C_BOLD" "$C_RESET" "$(basename "$0")"
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -448,30 +734,64 @@ finish_message() {
 
 cmd_start() {
   case "$(require_mode)" in
-    direct) systemctl start "$SERVICE" ;;
-    docker) compose up -d ;;
+    direct) run "Starting the node" systemctl start "$SERVICE" ;;
+    docker) run "Starting the node" compose up -d ;;
   esac
+  ok "The node is started."
 }
 
 cmd_stop() {
   case "$(require_mode)" in
-    direct) systemctl stop "$SERVICE" ;;
-    docker) compose stop ;;
+    direct) run "Stopping the node" systemctl stop "$SERVICE" ;;
+    docker) run "Stopping the node" compose stop ;;
   esac
+  ok "The node is stopped. Its identity is kept; 'start' brings it back."
 }
 
 cmd_restart() {
   case "$(require_mode)" in
-    direct) systemctl restart "$SERVICE" ;;
-    docker) compose restart ;;
+    direct) run "Restarting the node" systemctl restart "$SERVICE" ;;
+    docker) run "Restarting the node" compose restart ;;
+  esac
+  ok "The node is restarted."
+}
+
+node_running() {
+  case "$(installed_mode)" in
+    direct) systemctl is-active --quiet "$SERVICE" ;;
+    docker) [ -n "$(compose ps --status running --quiet 2>/dev/null)" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+node_version() {
+  case "$(installed_mode)" in
+    direct) "${APP_DIR}/current/ipping-node" --version 2>/dev/null | awk '{ print $2 }' ;;
+    docker)
+      # Ask the running container; fall back to the image tag.
+      compose exec -T ipping-node /usr/local/bin/ipping-node --version 2>/dev/null | awk '{ print $2 }' | grep . \
+        || env_value IPPING_NODE_IMAGE | sed 's/.*://'
+      ;;
   esac
 }
 
 cmd_status() {
-  case "$(require_mode)" in
-    direct) systemctl status "$SERVICE" --no-pager || true ;;
-    docker) compose ps ;;
-  esac
+  local mode
+  mode="$(require_mode)"
+  banner "ipping-node" "$(node_version)  ${S_SEP}  ${mode}"
+  step "Service"
+  if node_running; then
+    printf '  %s%s%s %-14s running
+' "$C_GREEN" "$S_UP" "$C_RESET" "ipping-node"
+  else
+    printf '  %s%s%s %-14s %sstopped%s
+' "$C_RED" "$S_DOWN" "$C_RESET" "ipping-node" "$C_RED" "$C_RESET"
+  fi
+  step "Connection"
+  info "Site      $(node_server)"
+  if [ -n "$(node_id)" ]; then info "Node id   $(node_id)"; fi
+  info "Status    $(node_approval)"
+  note "Run 'doctor' for a full check."
 }
 
 cmd_logs() {
@@ -484,22 +804,25 @@ cmd_logs() {
 cmd_update() {
   local mode
   mode="$(require_mode)"
+  banner "ipping-node" "update"
   if [ "$mode" = "docker" ]; then
-    step "Pulling the image and recreating the container"
+    step "Updating the image"
     if [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]; then
       sed -i "s|^IPPING_NODE_IMAGE=.*|IPPING_NODE_IMAGE=${IMAGE}:${VERSION#v}|" "${APP_DIR}/.env"
     fi
-    compose pull --quiet || warn "Could not pull the image; continuing with the local copy."
-    compose up -d
+    run_soft "Downloading the image" compose pull --quiet || warn "Could not download the image; continuing with the local copy."
+    run "Recreating the container" compose up -d
+    ok "Updated."
     return
   fi
 
   local tag previous releases_dir
+  step "Looking for a release"
   tag="$(resolve_version)"
   previous="$(readlink "${APP_DIR}/current" || true)"
   releases_dir="${APP_DIR}/releases/${tag}"
   if [ "$previous" = "$releases_dir" ]; then
-    info "Already running ${tag}."
+    ok "Already running ${tag}; nothing to do."
     return
   fi
   install -d -m 0755 "$releases_dir"
@@ -508,11 +831,10 @@ cmd_update() {
 
   step "Switching to ${tag}"
   ln -sfn "$releases_dir" "${APP_DIR}/current"
-  systemctl restart "$SERVICE"
-  sleep 2
-  if ! systemctl is-active --quiet "$SERVICE"; then
+  run "Restarting the service" systemctl restart "$SERVICE"
+  if ! run_soft "Checking that the new version stays up" wait_for_active 5; then
     warn "The new version did not start; rolling back."
-    [ -n "$previous" ] && ln -sfn "$previous" "${APP_DIR}/current"
+    if [ -n "$previous" ]; then ln -sfn "$previous" "${APP_DIR}/current"; fi
     systemctl restart "$SERVICE" || true
     die "Update to ${tag} failed and was rolled back."
   fi
@@ -520,40 +842,54 @@ cmd_update() {
 }
 
 cmd_doctor() {
-  local mode problems=0
+  local mode problems=0 total=0 server
   mode="$(installed_mode)"
-  check() { # check "what" command...
-    local what="$1"; shift
-    if "$@" >/dev/null 2>&1; then printf '  %sok%s   %s\n' "$GREEN" "$RESET" "$what"; else printf '  %sFAIL%s %s\n' "$RED" "$RESET" "$what"; problems=$((problems + 1)); fi
-  }
-  echo "ipping-node doctor (mode: ${mode:-not installed})"
   [ -n "$mode" ] || die "Not installed."
-  local server
-  if [ "$mode" = "direct" ]; then
-    server="$(sed -n 's/.*"server": *"\([^"]*\)".*/\1/p' "${STATE_DIR}/node.json" 2>/dev/null | head -n 1)"
-    check "service is running" systemctl is-active --quiet "$SERVICE"
-    check "credential file exists with mode 600" bash -c "[ \"\$(stat -c %a '${STATE_DIR}/credential')\" = 600 ]"
-    if service_group_can_ping; then
-      check "unprivileged ICMP allowed (ping_group_range)" true
+  banner "ipping-node doctor" "$(node_version)  ${S_SEP}  ${mode}"
+  # check "what" "what to try if it fails" command...
+  check() {
+    local what="$1" hint="$2"
+    shift 2
+    total=$((total + 1))
+    if "$@" >/dev/null 2>&1; then
+      tick "$what"
     else
-      check "service has CAP_NET_RAW for ICMP" grep -q CAP_NET_RAW "$UNIT_FILE"
+      printf '  %s%s%s %s\n' "$C_RED" "$S_FAIL" "$C_RESET" "$what"
+      note "   try: ${hint}"
+      problems=$((problems + 1))
     fi
-  else
-    server="$(env_value IPPING_NODE_SERVER)"
-    check "container is running" bash -c "docker compose -p '$COMPOSE_PROJECT' -f '${APP_DIR}/compose.yaml' --env-file '${APP_DIR}/.env' ps --status running --quiet | grep -q ."
+  }
+  step "The node"
+  check "the node is running" "sudo bash $0 logs" node_running
+  if [ "$mode" = "direct" ]; then
+    check "the credential file is private (mode 600)" "sudo chmod 600 ${STATE_DIR}/credential" bash -c "[ \"\$(stat -c %a '${STATE_DIR}/credential')\" = 600 ]"
+    if service_group_can_ping; then
+      check "unprivileged ICMP is allowed (ping_group_range)" "" true
+    else
+      check "the service has CAP_NET_RAW for ICMP" "reinstall the node" grep -q CAP_NET_RAW "$UNIT_FILE"
+    fi
   fi
+  step "The site"
+  server="$(node_server)"
   if [ -n "$server" ]; then
-    check "backend reachable at ${server}" curl -fsS --max-time 8 "${server%/}/api/v1/health/live"
+    check "the site answers at ${server}" "check the address and the firewall" curl -fsS --max-time 8 "${server%/}/api/v1/health/live"
   fi
-  if [ "$problems" -eq 0 ]; then ok "No problems found."; else die "${problems} problem(s) found."; fi
+  note "Approval: $(node_approval)"
+  if [ "$problems" -eq 0 ]; then
+    ok "All ${total} checks passed."
+  else
+    die "${problems} of ${total} checks failed."
+  fi
 }
 
 cmd_uninstall() {
   local mode
   mode="$(require_mode)"
-  confirm "Remove ipping-node from this host?" || exit 0
+  step "Uninstalling ipping-node"
+  if [ "$PURGE" -eq 1 ]; then warn "--purge deletes this node's identity: it would have to enroll again."; fi
+  confirm "Remove ipping-node from this host?" n || exit 0
   if [ "$mode" = "docker" ]; then
-    if [ "$PURGE" -eq 1 ]; then compose down -v; else compose down; fi
+    if [ "$PURGE" -eq 1 ]; then run "Removing the container and its state" compose down -v; else run "Removing the container" compose down; fi
   else
     systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
     rm -f "$UNIT_FILE" "$BIN_LINK"
@@ -587,7 +923,8 @@ Commands:
 
 Options:
   --mode direct|docker     direct: systemd service, no Docker. docker: container, no Rust or Python needed.
-  --server URL             Backend address, e.g. https://ping.example.com
+  --server URL             Where your ipping site is, e.g. https://ping.example.com
+                           Run without options for a guided install.
   --token TOKEN            Single-use enrollment token from the admin page (or IPPING_NODE_ENROLL_TOKEN)
   --name NAME  --country CC  --city CITY  --provider NAME     What the public node list shows
   --version vX.Y.Z         Release to install (default: latest)
@@ -599,32 +936,104 @@ Options:
 EOF
 }
 
+menu_status_line() {
+  if [ -n "$(installed_mode)" ]; then
+    local state=stopped
+    if node_running; then state=running; fi
+    printf '%s  %s  %s  %s  %s' "$(node_version)" "$S_SEP" "$(installed_mode)" "$S_SEP" "$state"
+  else
+    printf 'not installed'
+  fi
+}
+
 menu() {
-  echo "ipping-node"
-  # shellcheck disable=SC2034  # the menu acts on $REPLY, not the selected text
-  select choice in "Install (direct, systemd)" "Install (Docker)" "Update" "Status" "Logs" "Doctor" "Restart" "Uninstall" "Quit"; do
-    case "$REPLY" in
-      1) MODE=direct; cmd_install; break ;;
-      2) MODE=docker; cmd_install; break ;;
-      3) cmd_update; break ;;
-      4) cmd_status; break ;;
-      5) cmd_logs; break ;;
-      6) cmd_doctor; break ;;
-      7) cmd_restart; break ;;
-      8) cmd_uninstall; break ;;
-      9) break ;;
-    esac
+  local choice mode keys=() labels=() i
+  trap ':' INT   # Ctrl-C stops a running action (such as logs), not the menu
+  while :; do
+    mode="$(installed_mode)"
+    keys=(); labels=()
+    if [ -z "$mode" ]; then
+      keys=(install_direct install_docker)
+      labels=("Install directly on this machine (recommended)" "Install with Docker")
+    else
+      keys=(status doctor logs update restart stop start uninstall)
+      labels=("Show what is running" "Check that everything works" "Follow the logs" "Update to the latest release" "Restart" "Stop" "Start" "Uninstall")
+    fi
+    banner "ipping-node" "$(menu_status_line)"
+    printf '\n'
+    for ((i = 0; i < ${#keys[@]}; i++)); do printf '  %s%2d%s  %s\n' "$C_CYAN" $((i + 1)) "$C_RESET" "${labels[i]}"; done
+    printf '  %s q%s  Quit\n\n' "$C_CYAN" "$C_RESET"
+    printf '  %s>%s ' "$C_CYAN" "$C_RESET"
+    read -r choice || exit 0
+    case "$choice" in q | Q | quit | exit | "") exit 0 ;; esac
+    if [[ $choice =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#keys[@]}" ]; then
+      case "${keys[choice - 1]}" in
+        install_direct) ( MODE=direct; cmd_install ) || true ;;
+        install_docker) ( MODE=docker; cmd_install ) || true ;;
+        status) ( cmd_status ) || true ;;
+        doctor) ( cmd_doctor ) || true ;;
+        logs) ( cmd_logs ) || true ;;
+        update) ( cmd_update ) || true ;;
+        restart) ( cmd_restart ) || true ;;
+        stop) ( cmd_stop ) || true ;;
+        start) ( cmd_start ) || true ;;
+        uninstall) ( cmd_uninstall ) || true ;;
+      esac
+      printf '\n%sPress Enter to return to the menu.%s ' "$C_DIM" "$C_RESET"
+      read -r _ || exit 0
+    else
+      warn "Choose a number from the list, or q to quit."
+      sleep 1
+    fi
   done
 }
 
 cmd_install() {
   need_root install
-  [ -n "$MODE" ] || { ask MODE "Mode (direct or docker)"; }
+  ui_log_init /var/log/ipping-node-install.log
+  banner "ipping-node" "installer"
+  if [ -n "$(installed_mode)" ]; then
+    die "ipping-node is already installed. Use 'update' to change versions, or 'uninstall' first."
+  fi
+  local pick=1 enrolled=no
+  if [ -f "${STATE_DIR}/credential" ]; then enrolled=yes; fi
+  if is_interactive && [ -z "$MODE" ]; then
+    choose pick "How should the node run on this machine?" 1 \
+      "Directly on this machine (recommended)|A small program run by systemd. Nothing else to install." \
+      "Docker|A hardened container. Docker is installed for you if it is missing."
+    case "$pick" in 1) MODE=direct ;; *) MODE=docker ;; esac
+  fi
+  case "$MODE" in direct | docker) ;; *) die "Choose how to run it with --mode direct or --mode docker." ;; esac
+  if [ "$enrolled" = yes ] && [ "$MODE" = direct ]; then
+    note "This node is already enrolled; it keeps its identity."
+    SERVER="$(node_server_from_state)"
+  elif [ -f "${APP_DIR}/.env" ]; then
+    note "Found the settings of an earlier install; they will be reused."
+  else
+    enrollment_questions
+    collect_enrollment_details
+    run_soft "Checking that ${SERVER} answers" curl -fsS --max-time 10 "${SERVER}/api/v1/health/live" \
+      || die "Could not reach ${SERVER}. Check the address, that the site is up, and this machine's firewall."
+  fi
+  if is_interactive; then
+    box "Ready to install" \
+      "" \
+      "Mode      $( [ "$MODE" = docker ] && echo "Docker" || echo "Directly on this machine (systemd)" )" \
+      "Site      ${SERVER:-kept from the earlier install}" \
+      "Node      ${NAME:-$(hostname)}" \
+      "Location  ${CITY:+${CITY}, }${COUNTRY:-not set}" \
+      "Release   ${VERSION:-latest}" \
+      ""
+    confirm "Install now?" || { note "Nothing was changed."; exit 0; }
+  fi
   case "$MODE" in
     direct) install_direct_mode ;;
     docker) install_docker_mode ;;
-    *) die "--mode must be direct or docker." ;;
   esac
+}
+
+node_server_from_state() {
+  sed -n 's/.*"server": *"\([^"]*\)".*/\1/p' "${STATE_DIR}/node.json" 2>/dev/null | head -n 1
 }
 
 elevate_if_needed() {
@@ -635,7 +1044,7 @@ elevate_if_needed() {
   for arg in "$@"; do case "$arg" in -h | --help) return 0 ;; esac; done
   if ! command_exists sudo; then die "This needs root and sudo is not installed. Run it as root."; fi
   if [ ! -f "$0" ]; then die "Save the script to a file and run it from there (it has to start itself again with sudo)."; fi
-  info "Root is needed; running again with sudo."
+  note "This needs root: running again with sudo."
   exec sudo --preserve-env bash "$0" "$@"
 }
 
@@ -651,10 +1060,17 @@ main() {
     case "$1" in
       install | update | start | stop | restart | status | logs | doctor | uninstall) command="$1" ;;
       --mode) MODE="${2:?--mode needs a value}"; shift ;;
-      --server) SERVER="${2:?--server needs a value}"; shift ;;
+      --server)
+        SERVER="${2:?--server needs a value}"; shift
+        valid_server "$SERVER" || die "'${SERVER}' is not a site address. Use the form https://ping.example.com (no path)."
+        ;;
       --token) TOKEN="${2:?--token needs a value}"; shift ;;
       --name) NAME="${2:?--name needs a value}"; shift ;;
-      --country) COUNTRY="${2:?--country needs a value}"; shift ;;
+      --country)
+        COUNTRY="${2:?--country needs a value}"; shift
+        valid_country "$COUNTRY" || die "'${COUNTRY}' is not a two-letter country code (for example DE)."
+        COUNTRY="$(printf '%s' "$COUNTRY" | tr '[:lower:]' '[:upper:]')"
+        ;;
       --city) CITY="${2:?--city needs a value}"; shift ;;
       --provider) PROVIDER="${2:?--provider needs a value}"; shift ;;
       --version)
@@ -674,16 +1090,16 @@ main() {
   # Only now, with the arguments known to be good: asking for a password for a typo is rude.
   elevate_if_needed "${original_args[@]}"
   case "$command" in
-    "") if [ -t 0 ]; then need_root; menu; else usage; exit 1; fi ;;
+    "") if [ -t 0 ]; then need_root; ui_log_init /var/log/ipping-node-install.log; menu; else usage; exit 1; fi ;;
     install) cmd_install ;;
-    update) need_root; cmd_update ;;
-    start) need_root; cmd_start ;;
-    stop) need_root; cmd_stop ;;
-    restart) need_root; cmd_restart ;;
+    update) need_root; ui_log_init /var/log/ipping-node-install.log; cmd_update ;;
+    start) need_root; ui_log_init /var/log/ipping-node-install.log; cmd_start ;;
+    stop) need_root; ui_log_init /var/log/ipping-node-install.log; cmd_stop ;;
+    restart) need_root; ui_log_init /var/log/ipping-node-install.log; cmd_restart ;;
     status) cmd_status ;;
     logs) cmd_logs ;;
     doctor) cmd_doctor ;;
-    uninstall) need_root; cmd_uninstall ;;
+    uninstall) need_root; ui_log_init /var/log/ipping-node-install.log; cmd_uninstall ;;
   esac
 }
 
