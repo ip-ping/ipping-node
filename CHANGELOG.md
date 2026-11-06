@@ -4,6 +4,20 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: TCP connect checks
+- New task kind `tcp`: open a connection to a port, time the handshake, close it without sending a
+  byte. A refusal is reported as an `error` sample that keeps its time (the host answered); a timeout
+  is a timeout; an unreachable route is its own code. The node advertises `tcp` in its hello.
+- Ports are an allowlist (22, 25, 53, 80, 110, 143, 443, 465, 587, 853, 993, 995, 3306, 3389, 5432,
+  8080, 8443 by default; `--ports` / `IPPING_NODE_PORTS` takes a list or `any`), enforced on the node
+  whatever the backend asks for: a node that connects anywhere is a port scanner. Port 0 never passes.
+- The runner now checks a task against what the node advertised: a kind it did not offer, or a kind
+  from a newer backend, is answered with `unsupported_kind` instead of being dropped or run.
+- Protocol types follow the backend's additive changes (`port`/`server_name` in the target, `scheme`,
+  `path`, `max_redirects`, `max_hops` in the options, `detail` in samples); the new contract fixtures
+  are copied in and checked, including exact round trips.
+- 11 new tests (20 runner tests with scripted probes, port rules, real loopback connect and refusal).
+
 ### 2026-11-06: a nicer installer
 - Guided install: Docker or direct, where your ipping site is (checked to be reachable before anything
   changes, with a warning and a safe default for plain HTTP), the enrollment token typed without echo,

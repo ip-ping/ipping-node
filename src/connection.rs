@@ -40,6 +40,9 @@ pub struct Settings {
     pub credential: String,
     /// Local ceiling on simultaneous tasks, applied on top of what the backend allows.
     pub max_concurrent_tasks: usize,
+    /// Where the node may connect; production uses [`Policy::public_only`] (optionally with the
+    /// operator's ports).
+    pub policy: Policy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,7 +187,7 @@ async fn session(
     let runner = Runner::new(
         prober.clone(),
         Arc::new(SystemResolver),
-        Policy::public_only(),
+        settings.policy,
         capabilities,
     )
     .with_clock_offset(offset);

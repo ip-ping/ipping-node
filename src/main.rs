@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use ipping_node::connection::{self, Settings};
 use ipping_node::enroll::{self, Details};
+use ipping_node::policy::{Policy, Ports};
 use ipping_node::state::{Identity, StateDir};
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +65,10 @@ struct RunArgs {
     /// Most tasks this node will run at the same time
     #[arg(long, env = "IPPING_NODE_MAX_TASKS", default_value_t = 8)]
     max_tasks: usize,
+    /// Destination ports a tcp or http check may use: a comma-separated list, or "any". The
+    /// default is a short list of common service ports.
+    #[arg(long, env = "IPPING_NODE_PORTS", value_parser = Ports::parse)]
+    ports: Option<Ports>,
     /// Backend address; overrides the one saved at enrollment
     #[arg(long, env = "IPPING_NODE_SERVER")]
     server: Option<String>,
@@ -197,6 +202,9 @@ async fn do_run(state: StateDir, args: RunArgs) -> Result<(), String> {
         server: set(args.server).unwrap_or(loaded.identity.server),
         credential: loaded.credential,
         max_concurrent_tasks: args.max_tasks,
+        policy: args.ports.map_or_else(Policy::public_only, |ports| {
+            Policy::public_only().with_ports(ports)
+        }),
     };
 
     let shutdown = CancellationToken::new();

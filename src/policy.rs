@@ -83,18 +83,70 @@ pub enum PolicyError {
     InvalidAddress,
     #[error("not a valid public hostname")]
     InvalidHostname,
+    #[error("port {0} is not allowed on this node")]
+    PortNotAllowed(u16),
+}
+
+/// Ports a tcp or http check may connect to unless the operator chose otherwise. The same short
+/// list as the backend's default: a node that connects to any port of any host would be a port
+/// scanner for hire.
+pub const DEFAULT_PORTS: &[u16] = &[
+    22, 25, 53, 80, 110, 143, 443, 465, 587, 853, 993, 995, 3306, 3389, 5432, 8080, 8443,
+];
+
+/// Which destination ports are acceptable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ports {
+    Only(&'static [u16]),
+    Any,
+}
+
+impl Ports {
+    /// Parse the operator's setting: `any`, or a comma-separated list such as `80,443,9200`.
+    /// The list lives for the whole process, so it is leaked once at start-up.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("any") {
+            return Ok(Self::Any);
+        }
+        let mut ports = Vec::new();
+        for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let port: u16 = part
+                .parse()
+                .ok()
+                .filter(|p| *p != 0)
+                .ok_or_else(|| format!("{part:?} is not a port number"))?;
+            if !ports.contains(&port) {
+                ports.push(port);
+            }
+        }
+        if ports.is_empty() {
+            return Err("the list of ports is empty".into());
+        }
+        Ok(Self::Only(Box::leak(ports.into_boxed_slice())))
+    }
+
+    pub fn allows(&self, port: u16) -> bool {
+        port != 0
+            && match self {
+                Self::Only(list) => list.contains(&port),
+                Self::Any => true,
+            }
+    }
 }
 
 /// The node's destination rules. Production code only ever builds [`Policy::public_only`].
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
     allow_non_public: bool,
+    ports: Ports,
 }
 
 impl Policy {
     pub const fn public_only() -> Self {
         Self {
             allow_non_public: false,
+            ports: Ports::Only(DEFAULT_PORTS),
         }
     }
 
@@ -102,6 +154,20 @@ impl Policy {
     pub const fn permissive_for_tests() -> Self {
         Self {
             allow_non_public: true,
+            ports: Ports::Any,
+        }
+    }
+
+    pub const fn with_ports(mut self, ports: Ports) -> Self {
+        self.ports = ports;
+        self
+    }
+
+    pub fn check_port(&self, port: u16) -> Result<u16, PolicyError> {
+        if self.ports.allows(port) {
+            Ok(port)
+        } else {
+            Err(PolicyError::PortNotAllowed(port))
         }
     }
 
@@ -295,5 +361,33 @@ mod tests {
         }
         let too_long_label = format!("{}.example.com", "a".repeat(64));
         assert!(validate_hostname(&too_long_label).is_err());
+    }
+
+    #[test]
+    fn ports_are_an_allowlist() {
+        let policy = Policy::public_only();
+        for port in [22, 25, 80, 443, 8443] {
+            assert_eq!(policy.check_port(port), Ok(port));
+        }
+        for port in [0, 1, 23, 135, 445, 6379, 9200, 27017, 65535] {
+            assert_eq!(
+                policy.check_port(port),
+                Err(PolicyError::PortNotAllowed(port))
+            );
+        }
+    }
+
+    #[test]
+    fn the_operator_can_choose_ports() {
+        let chosen = Ports::parse("9200, 80 ,9200").unwrap();
+        let policy = Policy::public_only().with_ports(chosen);
+        assert_eq!(policy.check_port(9200), Ok(9200));
+        assert!(policy.check_port(443).is_err());
+        let any = Policy::public_only().with_ports(Ports::parse("ANY").unwrap());
+        assert_eq!(any.check_port(6379), Ok(6379));
+        assert!(any.check_port(0).is_err(), "port 0 is never a destination");
+        for bad in ["", "80,x", "0", "70000", ",,"] {
+            assert!(Ports::parse(bad).is_err(), "{bad:?}");
+        }
     }
 }

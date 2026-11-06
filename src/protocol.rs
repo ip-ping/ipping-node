@@ -37,6 +37,10 @@ pub enum ClientFrame {
         rtt_us: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_code: Option<String>,
+        /// What only some kinds have: an HTTP response's timings and certificate, a traceroute
+        /// hop. Plain JSON on the wire; the backend validates it against the task's kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<serde_json::Value>,
     },
     TaskResult {
         task_id: String,
@@ -142,7 +146,7 @@ pub struct Task {
     pub attempt_id: String,
     pub kind: TaskKind,
     pub target: Target,
-    pub options: PingOptions,
+    pub options: TaskOptions,
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
@@ -151,6 +155,12 @@ pub struct Task {
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     Ping,
+    Tcp,
+    Http,
+    Traceroute,
+    /// A kind from a newer backend. The task is answered with `unsupported_kind`, not dropped.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Exactly one of `ip` (probe this address) or `hostname` (resolve it here) is set.
@@ -162,6 +172,12 @@ pub struct Target {
     pub hostname: Option<String>,
     #[serde(default)]
     pub family: Family,
+    /// Destination port of a tcp or http task.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// The name an http task presents (Host header, TLS server name) while connecting to `ip`.
+    #[serde(default)]
+    pub server_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -176,10 +192,52 @@ pub enum Family {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct PingOptions {
+#[serde(rename_all = "snake_case")]
+pub enum Scheme {
+    Http,
+    Https,
+}
+
+/// Settings of a task. Which ones matter depends on the kind: ping and tcp use `count`,
+/// `interval_ms` and `timeout_ms`; http uses `scheme`, `path`, `timeout_ms` (for the whole request,
+/// redirects included) and `max_redirects`; traceroute uses `max_hops` and `timeout_ms` (per hop).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TaskOptions {
+    #[serde(default = "default_count")]
     pub count: u32,
+    #[serde(default = "default_interval_ms")]
     pub interval_ms: u64,
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub scheme: Option<Scheme>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_redirects: Option<u8>,
+    #[serde(default)]
+    pub max_hops: Option<u8>,
+}
+
+fn default_count() -> u32 {
+    1
+}
+
+fn default_interval_ms() -> u64 {
+    1000
+}
+
+impl Default for TaskOptions {
+    fn default() -> Self {
+        Self {
+            count: default_count(),
+            interval_ms: default_interval_ms(),
+            timeout_ms: 2000,
+            scheme: None,
+            path: None,
+            max_redirects: None,
+            max_hops: None,
+        }
+    }
 }
 
 /// Error codes a task can fail with (the backend maps unknown ones to `internal_error`).
@@ -191,4 +249,18 @@ pub mod error_code {
     pub const NODE_BUSY: &str = "node_busy";
     pub const EXPIRED: &str = "expired";
     pub const INTERNAL_ERROR: &str = "internal_error";
+    pub const UNSUPPORTED_KIND: &str = "unsupported_kind";
+    pub const PORT_NOT_ALLOWED: &str = "port_not_allowed";
+
+    // Codes a single sample can carry.
+    pub const TIMEOUT: &str = "timeout";
+    pub const CONNECTION_REFUSED: &str = "connection_refused";
+    pub const CONNECTION_RESET: &str = "connection_reset";
+    pub const HOST_UNREACHABLE: &str = "host_unreachable";
+    pub const NETWORK_UNREACHABLE: &str = "network_unreachable";
+    pub const TLS_ERROR: &str = "tls_error";
+    pub const TLS_CERTIFICATE_INVALID: &str = "tls_certificate_invalid";
+    pub const PROTOCOL_ERROR: &str = "protocol_error";
+    pub const TOO_MANY_REDIRECTS: &str = "too_many_redirects";
+    pub const REDIRECT_BLOCKED: &str = "redirect_blocked";
 }

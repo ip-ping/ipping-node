@@ -80,6 +80,15 @@ environment variable, and `run` will enroll by itself when `IPPING_NODE_SERVER` 
 ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that means
 `net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`.
 
+### What it measures
+
+| Kind | One sample | Node-side limits |
+| --- | --- | --- |
+| `ping` | an ICMP echo | 1 to 10 per task, 56-byte payload, public addresses only |
+| `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
+
+The node refuses any task for a kind it did not advertise, whatever the backend sends.
+
 ## Docker
 
 ```bash
@@ -126,7 +135,8 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] Release workflow: binaries (linux amd64 / arm64), checksums, installer; rolling `edge` installer
 - [x] First tagged release: v0.1.0
 - [x] `ipping-node.sh` installer (direct and Docker modes; tested in clean containers, see CHANGELOG)
-- [ ] TCP, HTTP and traceroute probes
+- [x] TCP connect checks
+- [ ] HTTP checks (timings, TLS certificate, redirects) and traceroute
 
 ## License
 

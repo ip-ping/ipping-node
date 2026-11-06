@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ipping_node::policy::Policy;
-use ipping_node::probes::{EchoOutcome, Prober};
+use ipping_node::probes::{ConnectOutcome, EchoOutcome, Prober};
 use ipping_node::protocol::{
     Capabilities, ClientFrame, ResultStatus, SampleStatus, ServerFrame, Task, error_code,
 };
@@ -21,7 +21,9 @@ use tokio_util::sync::CancellationToken;
 #[derive(Default)]
 struct ScriptedProber {
     outcomes: Mutex<VecDeque<EchoOutcome>>,
+    connects: Mutex<VecDeque<ConnectOutcome>>,
     calls: Mutex<Vec<(IpAddr, Instant)>>,
+    connected_to: Mutex<Vec<SocketAddr>>,
     hang: bool,
 }
 
@@ -29,6 +31,12 @@ impl ScriptedProber {
     fn with(outcomes: Vec<EchoOutcome>) -> Arc<Self> {
         Arc::new(Self {
             outcomes: Mutex::new(outcomes.into()),
+            ..Default::default()
+        })
+    }
+    fn connecting(outcomes: Vec<ConnectOutcome>) -> Arc<Self> {
+        Arc::new(Self {
+            connects: Mutex::new(outcomes.into()),
             ..Default::default()
         })
     }
@@ -48,6 +56,15 @@ impl Prober for ScriptedProber {
             .unwrap()
             .pop_front()
             .unwrap_or(EchoOutcome::Timeout)
+    }
+
+    async fn connect(&self, addr: SocketAddr, _timeout: Duration) -> ConnectOutcome {
+        self.connected_to.lock().unwrap().push(addr);
+        self.connects
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(ConnectOutcome::Timeout)
     }
 }
 
@@ -81,7 +98,7 @@ fn resolver() -> Arc<FakeResolver> {
 
 fn caps(ipv4: bool, ipv6: bool) -> Capabilities {
     Capabilities {
-        kinds: vec!["ping".into()],
+        kinds: vec!["ping".into(), "tcp".into()],
         ipv4,
         ipv6,
     }
@@ -476,4 +493,222 @@ async fn a_closed_connection_stops_the_task() {
         .run(ip_task("8.8.8.8", 4), tx, CancellationToken::new())
         .await;
     assert_eq!(prober.calls(), 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// tcp
+// ---------------------------------------------------------------------------------------------
+
+fn tcp_task(target: serde_json::Value, port: Option<u16>, count: u32) -> Task {
+    let mut target = target;
+    if let Some(port) = port {
+        target["port"] = json!(port);
+    }
+    let expires = time::OffsetDateTime::now_utc() + time::Duration::seconds(30);
+    let frame = json!({
+        "type": "task", "task_id": "t1", "attempt_id": "a1", "kind": "tcp",
+        "target": target,
+        "options": {"count": count, "interval_ms": 1000, "timeout_ms": 3000},
+        "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap(),
+    });
+    match serde_json::from_value(frame).unwrap() {
+        ServerFrame::Task(task) => task,
+        other => panic!("not a task: {other:?}"),
+    }
+}
+
+fn samples_of(frames: &[ClientFrame]) -> Vec<(u32, SampleStatus, Option<u64>, Option<String>)> {
+    frames
+        .iter()
+        .filter_map(|f| match f {
+            ClientFrame::Sample {
+                seq,
+                status,
+                rtt_us,
+                error_code,
+                ..
+            } => Some((*seq, *status, *rtt_us, error_code.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn tcp_reports_connections_refusals_and_timeouts() {
+    let prober = ScriptedProber::connecting(vec![
+        ConnectOutcome::Connected(Duration::from_millis(12)),
+        ConnectOutcome::Refused(Duration::from_millis(11)),
+        ConnectOutcome::Timeout,
+        ConnectOutcome::Failed(error_code::HOST_UNREACHABLE),
+    ]);
+    let frames = run(
+        prober.clone(),
+        Policy::public_only(),
+        caps(true, true),
+        tcp_task(json!({"ip": "93.184.216.34"}), Some(443), 4),
+    )
+    .await;
+
+    assert!(matches!(frames[0], ClientFrame::TaskAck { .. }));
+    assert_eq!(
+        samples_of(&frames),
+        vec![
+            (0, SampleStatus::Ok, Some(12_000), None),
+            (
+                1,
+                SampleStatus::Error,
+                Some(11_000),
+                Some("connection_refused".into())
+            ),
+            (2, SampleStatus::Timeout, None, None),
+            (
+                3,
+                SampleStatus::Error,
+                None,
+                Some("host_unreachable".into())
+            ),
+        ]
+    );
+    let (status, tested, code) = result_of(&frames);
+    assert_eq!(*status, ResultStatus::Completed);
+    assert_eq!(tested, Some("93.184.216.34"));
+    assert_eq!(code, None);
+    assert_eq!(
+        prober.connected_to.lock().unwrap()[0],
+        "93.184.216.34:443".parse().unwrap()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn tcp_resolves_the_hostname_on_the_node() {
+    let prober =
+        ScriptedProber::connecting(vec![ConnectOutcome::Connected(Duration::from_millis(3))]);
+    let frames = run(
+        prober.clone(),
+        Policy::public_only(),
+        caps(true, false),
+        tcp_task(json!({"hostname": "dual.example.com"}), Some(25), 1),
+    )
+    .await;
+    assert_eq!(*result_of(&frames).0, ResultStatus::Completed);
+    // The node has no IPv6, so the IPv4 answer is the one it connects to.
+    assert_eq!(
+        prober.connected_to.lock().unwrap()[0],
+        "93.184.216.34:25".parse().unwrap()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn ports_outside_the_allowlist_are_refused_before_anything_is_sent() {
+    for port in [None, Some(0), Some(23), Some(6379), Some(9200)] {
+        let prober = ScriptedProber::connecting(vec![]);
+        let frames = run(
+            prober.clone(),
+            Policy::public_only(),
+            caps(true, true),
+            tcp_task(json!({"ip": "93.184.216.34"}), port, 1),
+        )
+        .await;
+        assert_eq!(frames.len(), 1, "port {port:?}: {frames:?}");
+        let (status, _, code) = result_of(&frames);
+        assert_eq!(*status, ResultStatus::Failed);
+        assert_eq!(code, Some(error_code::PORT_NOT_ALLOWED), "port {port:?}");
+        assert!(prober.connected_to.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_operator_can_widen_the_ports() {
+    let prober =
+        ScriptedProber::connecting(vec![ConnectOutcome::Connected(Duration::from_millis(1))]);
+    let policy =
+        Policy::public_only().with_ports(ipping_node::policy::Ports::parse("9200, 80").unwrap());
+    let frames = run(
+        prober,
+        policy,
+        caps(true, true),
+        tcp_task(json!({"ip": "93.184.216.34"}), Some(9200), 1),
+    )
+    .await;
+    assert_eq!(*result_of(&frames).0, ResultStatus::Completed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn tcp_never_connects_to_private_addresses() {
+    for target in [
+        json!({"ip": "10.0.0.5"}),
+        json!({"hostname": "internal.example.com"}),
+    ] {
+        let prober = ScriptedProber::connecting(vec![]);
+        let frames = run(
+            prober.clone(),
+            Policy::public_only(),
+            caps(true, true),
+            tcp_task(target, Some(443), 1),
+        )
+        .await;
+        assert_eq!(result_of(&frames).2, Some(error_code::BLOCKED_BY_POLICY));
+        assert!(prober.connected_to.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn when_no_connection_can_be_attempted_the_task_fails_with_the_reason() {
+    let prober = ScriptedProber::connecting(vec![
+        ConnectOutcome::Failed(error_code::NETWORK_UNREACHABLE),
+        ConnectOutcome::Failed(error_code::NETWORK_UNREACHABLE),
+    ]);
+    let frames = run(
+        prober,
+        Policy::public_only(),
+        caps(true, true),
+        tcp_task(json!({"ip": "93.184.216.34"}), Some(443), 2),
+    )
+    .await;
+    let (status, _, code) = result_of(&frames);
+    assert_eq!(*status, ResultStatus::Failed);
+    assert_eq!(code, Some(error_code::NETWORK_UNREACHABLE));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_kind_the_node_did_not_advertise_is_not_run() {
+    let only_ping = Capabilities {
+        kinds: vec!["ping".into()],
+        ipv4: true,
+        ipv6: true,
+    };
+    let prober =
+        ScriptedProber::connecting(vec![ConnectOutcome::Connected(Duration::from_millis(1))]);
+    let frames = run(
+        prober.clone(),
+        Policy::public_only(),
+        only_ping,
+        tcp_task(json!({"ip": "93.184.216.34"}), Some(443), 1),
+    )
+    .await;
+    assert_eq!(frames.len(), 1);
+    assert_eq!(result_of(&frames).2, Some(error_code::UNSUPPORTED_KIND));
+    assert!(prober.connected_to.lock().unwrap().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_kind_from_the_future_is_answered_not_dropped() {
+    let expires = time::OffsetDateTime::now_utc() + time::Duration::seconds(30);
+    let frame = json!({
+        "type": "task", "task_id": "t1", "attempt_id": "a1", "kind": "quic_handshake",
+        "target": {"ip": "93.184.216.34"},
+        "options": {"timeout_ms": 2000},
+        "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap(),
+    });
+    let ServerFrame::Task(task) = serde_json::from_value(frame).unwrap() else {
+        panic!("not a task")
+    };
+    let frames = run(
+        ScriptedProber::with(vec![]),
+        Policy::public_only(),
+        caps(true, true),
+        task,
+    )
+    .await;
+    assert_eq!(result_of(&frames).2, Some(error_code::UNSUPPORTED_KIND));
 }

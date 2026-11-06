@@ -2,9 +2,10 @@
 //! way to ask for a custom packet size, flood mode or a sweep.
 
 pub mod icmp;
+pub mod tcp;
 
 use std::future::Future;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use crate::protocol::error_code;
@@ -20,8 +21,24 @@ pub enum EchoOutcome {
     Failed(&'static str),
 }
 
-/// Sends a single ICMP echo request and waits for its reply.
+/// What happened to one attempt to open a TCP connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectOutcome {
+    /// The handshake completed after this long.
+    Connected(Duration),
+    /// The host answered, with a reset: nothing accepts connections on that port. The time is how
+    /// long the refusal took to arrive.
+    Refused(Duration),
+    /// No answer within the timeout.
+    Timeout,
+    /// The attempt failed for another reason; the value is a protocol error code.
+    Failed(&'static str),
+}
+
+/// The things a node can measure. Only `echo` has to be provided: a prober that lacks the others
+/// (a test double, a platform without traceroute) answers "unsupported" and the runner reports it.
 pub trait Prober: Send + Sync + 'static {
+    /// Send one ICMP echo request and wait for its reply.
     fn echo(
         &self,
         ip: IpAddr,
@@ -29,6 +46,16 @@ pub trait Prober: Send + Sync + 'static {
         seq: u16,
         timeout: Duration,
     ) -> impl Future<Output = EchoOutcome> + Send;
+
+    /// Open one TCP connection and close it again.
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> impl Future<Output = ConnectOutcome> + Send {
+        let _ = (addr, timeout);
+        async { ConnectOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
+    }
 }
 
 /// Map an I/O error from sending an echo to the code the backend understands.

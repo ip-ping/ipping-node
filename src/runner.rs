@@ -4,7 +4,7 @@
 //! target goes through the local policy, and the task stops as soon as it is cancelled or
 //! expires.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,9 +14,10 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
 use crate::policy::{Policy, validate_hostname};
-use crate::probes::{EchoOutcome, Prober};
+use crate::probes::{ConnectOutcome, EchoOutcome, Prober};
 use crate::protocol::{
-    Capabilities, ClientFrame, Family, PingOptions, ResultStatus, SampleStatus, Task, error_code,
+    Capabilities, ClientFrame, Family, ResultStatus, SampleStatus, Task, TaskKind, TaskOptions,
+    error_code,
 };
 use crate::resolve::Resolve;
 
@@ -89,122 +90,170 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
     /// Execute `task`, sending frames to `out`. Returns when the task is finished, cancelled, or
     /// the connection (the receiving end of `out`) is gone.
     pub async fn run(&self, task: Task, out: mpsc::Sender<ClientFrame>, cancel: CancellationToken) {
-        let ids = (task.task_id.clone(), task.attempt_id.clone());
-        let fail = |failure: Failure| ClientFrame::TaskResult {
-            task_id: ids.0.clone(),
-            attempt_id: ids.1.clone(),
-            status: ResultStatus::Failed,
-            tested_ip: None,
-            resolved_ips: vec![],
-            error_code: Some(failure.code.to_string()),
-            error_message: Some(failure.message),
+        let job = Job {
+            task_id: task.task_id.clone(),
+            attempt_id: task.attempt_id.clone(),
+            out,
+            cancel,
         };
 
         if self.expired(&task) {
-            let _ = out
-                .send(fail(Failure::new(
-                    error_code::EXPIRED,
-                    "The task expired before it started.",
-                )))
-                .await;
+            job.fail(Failure::new(
+                error_code::EXPIRED,
+                "The task expired before it started.",
+            ))
+            .await;
             return;
         }
-        if let Err(failure) = check_options(&task.options) {
-            let _ = out.send(fail(failure)).await;
+        if let Err(failure) = self.check(&task) {
+            job.fail(failure).await;
             return;
         }
-        if out
-            .send(ClientFrame::TaskAck {
-                task_id: ids.0.clone(),
-                attempt_id: ids.1.clone(),
-            })
-            .await
-            .is_err()
-        {
+        if job.ack().await.is_err() {
             return;
         }
 
         let resolution = tokio::select! {
-            () = cancel.cancelled() => return,
+            () = job.cancel.cancelled() => return,
             resolution = self.resolve_target(&task) => resolution,
         };
         let (ip, resolved) = match resolution {
             Ok(found) => found,
             Err(failure) => {
-                let _ = out.send(fail(failure)).await;
+                job.fail(failure).await;
                 return;
             }
         };
 
-        let options = task.options;
+        match task.kind {
+            TaskKind::Ping | TaskKind::Tcp => self.run_series(&task, &job, ip, &resolved).await,
+            // `check` has already refused every other kind.
+            TaskKind::Http | TaskKind::Traceroute | TaskKind::Unknown => {}
+        }
+    }
+
+    /// Everything about a task that can be checked before touching the network.
+    fn check(&self, task: &Task) -> Result<(), Failure> {
+        let advertised = match task.kind {
+            TaskKind::Ping => "ping",
+            TaskKind::Tcp => "tcp",
+            TaskKind::Http => "http",
+            TaskKind::Traceroute => "traceroute",
+            TaskKind::Unknown => "",
+        };
+        if !self.capabilities.kinds.iter().any(|k| k == advertised) {
+            return Err(Failure::new(
+                error_code::UNSUPPORTED_KIND,
+                "This node does not run that kind of measurement.",
+            ));
+        }
+        match task.kind {
+            TaskKind::Ping => check_series_options(&task.options),
+            TaskKind::Tcp => {
+                check_series_options(&task.options)?;
+                let port = task.target.port.unwrap_or(0);
+                self.policy
+                    .check_port(port)
+                    .map(|_| ())
+                    .map_err(|e| Failure::new(error_code::PORT_NOT_ALLOWED, e.to_string()))
+            }
+            TaskKind::Http | TaskKind::Traceroute | TaskKind::Unknown => Err(Failure::new(
+                error_code::UNSUPPORTED_KIND,
+                "This node does not run that kind of measurement.",
+            )),
+        }
+    }
+
+    /// ping and tcp: a fixed number of attempts, one second (or so) apart, one sample each.
+    async fn run_series(&self, task: &Task, job: &Job, ip: IpAddr, resolved: &[IpAddr]) {
+        let options = &task.options;
         let ident: u16 = rand::random();
         let timeout = Duration::from_millis(options.timeout_ms);
         let interval = Duration::from_millis(options.interval_ms);
         let started = Instant::now();
         let mut failed_with: Option<&'static str> = None;
-        let mut any_ok = false;
+        let mut any_answer = false;
 
         for seq in 0..options.count {
             tokio::select! {
-                () = cancel.cancelled() => return,
+                () = job.cancel.cancelled() => return,
                 () = sleep_until(started + interval * seq) => {}
             }
-            if self.expired(&task) {
-                let _ = out
-                    .send(fail(Failure::new(
-                        error_code::EXPIRED,
-                        "The task expired while running.",
-                    )))
-                    .await;
+            if self.expired(task) {
+                job.fail(Failure::new(
+                    error_code::EXPIRED,
+                    "The task expired while running.",
+                ))
+                .await;
                 return;
             }
-            let outcome = tokio::select! {
-                () = cancel.cancelled() => return,
-                outcome = self.prober.echo(ip, ident, seq as u16, timeout) => outcome,
+            let observation = tokio::select! {
+                () = job.cancel.cancelled() => return,
+                observation = self.attempt(task, ip, ident, seq, timeout) => observation,
             };
-            let (status, rtt_us, code) = match outcome {
-                EchoOutcome::Reply(rtt) => {
-                    any_ok = true;
-                    // A reply that took longer than the timeout is not a reply.
-                    (
-                        SampleStatus::Ok,
-                        Some(u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX)),
-                        None,
-                    )
-                }
-                EchoOutcome::Timeout => (SampleStatus::Timeout, None, None),
-                EchoOutcome::Failed(code) => {
-                    failed_with = Some(code);
-                    (SampleStatus::Error, None, Some(code.to_string()))
-                }
-            };
-            let frame = ClientFrame::Sample {
-                task_id: ids.0.clone(),
-                attempt_id: ids.1.clone(),
-                seq,
-                status,
-                rtt_us,
-                error_code: code,
-            };
-            if out.send(frame).await.is_err() {
+            if observation.answered {
+                any_answer = true;
+            } else {
+                failed_with = observation.code;
+            }
+            if job
+                .sample(
+                    seq,
+                    observation.status,
+                    observation.rtt_us,
+                    observation.code,
+                )
+                .await
+                .is_err()
+            {
                 return;
             }
         }
 
-        // If every echo failed to even leave this host, say why instead of reporting 100% loss.
-        let result = match failed_with {
-            Some(code) if !any_ok => fail(Failure::new(code, "No echo request could be sent.")),
-            _ => ClientFrame::TaskResult {
-                task_id: ids.0.clone(),
-                attempt_id: ids.1.clone(),
-                status: ResultStatus::Completed,
-                tested_ip: Some(ip.to_string()),
-                resolved_ips: resolved.iter().map(ToString::to_string).collect(),
-                error_code: None,
-                error_message: None,
+        // If every attempt failed to even leave this host, say why instead of reporting 100% loss.
+        match failed_with {
+            Some(code) if !any_answer => {
+                job.fail(Failure::new(code, "No probe could be sent."))
+                    .await;
+            }
+            _ => job.completed(ip, resolved).await,
+        }
+    }
+
+    async fn attempt(
+        &self,
+        task: &Task,
+        ip: IpAddr,
+        ident: u16,
+        seq: u32,
+        timeout: Duration,
+    ) -> Observation {
+        match task.kind {
+            TaskKind::Tcp => {
+                let port = task.target.port.unwrap_or(0);
+                match self
+                    .prober
+                    .connect(SocketAddr::new(ip, port), timeout)
+                    .await
+                {
+                    ConnectOutcome::Connected(rtt) => Observation::ok(rtt),
+                    // The host answered, so the time is real; it is still not a connection.
+                    ConnectOutcome::Refused(rtt) => Observation {
+                        status: SampleStatus::Error,
+                        rtt_us: Some(micros(rtt)),
+                        code: Some(error_code::CONNECTION_REFUSED),
+                        answered: true,
+                    },
+                    ConnectOutcome::Timeout => Observation::timeout(),
+                    ConnectOutcome::Failed(code) => Observation::failed(code),
+                }
+            }
+            _ => match self.prober.echo(ip, ident, seq as u16, timeout).await {
+                EchoOutcome::Reply(rtt) => Observation::ok(rtt),
+                EchoOutcome::Timeout => Observation::timeout(),
+                EchoOutcome::Failed(code) => Observation::failed(code),
             },
-        };
-        let _ = out.send(result).await;
+        }
     }
 
     /// Turn the task's target into the one address that will be probed, applying the policy to
@@ -280,7 +329,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
     }
 }
 
-fn check_options(options: &PingOptions) -> Result<(), Failure> {
+fn check_series_options(options: &TaskOptions) -> Result<(), Failure> {
     if !(1..=MAX_COUNT).contains(&options.count)
         || !INTERVAL_MS.contains(&options.interval_ms)
         || !TIMEOUT_MS.contains(&options.timeout_ms)
@@ -291,4 +340,129 @@ fn check_options(options: &PingOptions) -> Result<(), Failure> {
         ));
     }
     Ok(())
+}
+
+fn micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// What one attempt of a series came to.
+struct Observation {
+    status: SampleStatus,
+    rtt_us: Option<u64>,
+    code: Option<&'static str>,
+    /// Did something answer? A refusal did; a send failure did not.
+    answered: bool,
+}
+
+impl Observation {
+    fn ok(rtt: Duration) -> Self {
+        Self {
+            status: SampleStatus::Ok,
+            rtt_us: Some(micros(rtt)),
+            code: None,
+            answered: true,
+        }
+    }
+    fn timeout() -> Self {
+        Self {
+            status: SampleStatus::Timeout,
+            rtt_us: None,
+            code: None,
+            answered: true,
+        }
+    }
+    fn failed(code: &'static str) -> Self {
+        Self {
+            status: SampleStatus::Error,
+            rtt_us: None,
+            code: Some(code),
+            answered: false,
+        }
+    }
+}
+
+/// The frames of one task, addressed with its ids.
+struct Job {
+    task_id: String,
+    attempt_id: String,
+    out: mpsc::Sender<ClientFrame>,
+    cancel: CancellationToken,
+}
+
+/// The connection is gone: stop, there is nobody to tell.
+struct Disconnected;
+
+impl Job {
+    async fn ack(&self) -> Result<(), Disconnected> {
+        self.out
+            .send(ClientFrame::TaskAck {
+                task_id: self.task_id.clone(),
+                attempt_id: self.attempt_id.clone(),
+            })
+            .await
+            .map_err(|_| Disconnected)
+    }
+
+    async fn sample(
+        &self,
+        seq: u32,
+        status: SampleStatus,
+        rtt_us: Option<u64>,
+        code: Option<&'static str>,
+    ) -> Result<(), Disconnected> {
+        self.sample_with(seq, status, rtt_us, code, None).await
+    }
+
+    async fn sample_with(
+        &self,
+        seq: u32,
+        status: SampleStatus,
+        rtt_us: Option<u64>,
+        code: Option<&'static str>,
+        detail: Option<serde_json::Value>,
+    ) -> Result<(), Disconnected> {
+        self.out
+            .send(ClientFrame::Sample {
+                task_id: self.task_id.clone(),
+                attempt_id: self.attempt_id.clone(),
+                seq,
+                status,
+                rtt_us,
+                error_code: code.map(str::to_owned),
+                detail,
+            })
+            .await
+            .map_err(|_| Disconnected)
+    }
+
+    async fn completed(&self, ip: IpAddr, resolved: &[IpAddr]) {
+        let _ = self
+            .out
+            .send(ClientFrame::TaskResult {
+                task_id: self.task_id.clone(),
+                attempt_id: self.attempt_id.clone(),
+                status: ResultStatus::Completed,
+                tested_ip: Some(ip.to_string()),
+                resolved_ips: resolved.iter().map(ToString::to_string).collect(),
+                error_code: None,
+                error_message: None,
+            })
+            .await;
+    }
+
+    async fn fail(&self, failure: Failure) {
+        let _ = self
+            .out
+            .send(ClientFrame::TaskResult {
+                task_id: self.task_id.clone(),
+                attempt_id: self.attempt_id.clone(),
+                status: ResultStatus::Failed,
+                tested_ip: None,
+                resolved_ips: vec![],
+                error_code: Some(failure.code.to_string()),
+                error_message: Some(failure.message),
+            })
+            .await;
+    }
 }

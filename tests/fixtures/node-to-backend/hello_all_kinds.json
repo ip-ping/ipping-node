@@ -1,0 +1,17 @@
+{
+  "type": "hello",
+  "protocol_versions": [
+    1
+  ],
+  "node_version": "0.3.0",
+  "capabilities": {
+    "kinds": [
+      "ping",
+      "tcp",
+      "http",
+      "traceroute"
+    ],
+    "ipv4": true,
+    "ipv6": false
+  }
+}
