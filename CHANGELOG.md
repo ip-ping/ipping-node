@@ -4,6 +4,11 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+## v0.3.0 (2026-11-06)
+
+TCP, HTTP and traceroute checks, a port allowlist, and an installer fixed for Debian 13 with a guided
+interface. Needs backend v0.3.0 for the new kinds; works with older backends for ping.
+
 ### 2026-11-06: IPv6 checked as far as this machine allows
 - TCP and HTTP are exercised over the IPv6 loopback (connect, refusal, a request with a bracketed
   `Host`), and traceroute over IPv6 through real routers in namespaces. What has *not* been tested is
