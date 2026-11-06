@@ -4,6 +4,12 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-06: fix: a lint that only Linux can see
+- The traceroute code is Linux-only, so clippy on macOS never compiled it; CI on Linux flagged one
+  cast that is needed on musl but redundant on glibc. Allowed with the reason. Lesson kept in the
+  workflow: check clippy on Linux too (`docker run rust:1 cargo clippy --all-targets -- -D warnings`).
+  The traceroute-in-namespaces job itself passed on GitHub's runners: real routers, IPv4 and IPv6.
+
 ### 2026-11-06: fix: CI had been failing on a lint note in the installer
 - The latest ShellCheck (stricter than the version used while developing) flagged the menu's
   `( MODE=...; cmd_install )` as a variable modified in a subshell. The mode is now set before the

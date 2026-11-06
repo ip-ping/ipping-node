@@ -59,6 +59,8 @@ pub fn probe(ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
 }
 
 #[cfg(target_os = "linux")]
+// `cmsg_len` is a `usize` on glibc but a `u32` on musl, so the casts below are needed on one of them.
+#[allow(clippy::unnecessary_cast)]
 mod linux {
     use std::io;
     use std::mem::{MaybeUninit, size_of, zeroed};
