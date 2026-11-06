@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2329  # test doubles that the sourced script calls; shellcheck cannot see that
+# shellcheck disable=SC2329,SC2317  # test doubles that the sourced script calls; shellcheck cannot see that
 # Tests for the installer's own logic (no root, no network, nothing installed).
 #   bash tests/installer.sh
 set -u
