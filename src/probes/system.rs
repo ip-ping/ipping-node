@@ -3,6 +3,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use super::dns::{self, DnsOutcome, DnsRequest};
 use super::http::{HttpClient, HttpOutcome, HttpRequest};
 use super::icmp::IcmpProber;
 use super::traceroute::{self, HopOutcome};
@@ -22,12 +23,13 @@ impl SystemProber {
         }
     }
 
-    /// What this node can do, checked rather than assumed. TCP and HTTP need nothing special;
+    /// What this node can do, checked rather than assumed. TCP, HTTP and DNS need nothing special;
     /// ping needs an ICMP socket.
     pub fn capabilities(&self) -> Capabilities {
         let mut capabilities = self.icmp.capabilities();
         capabilities.kinds.push("tcp".into());
         capabilities.kinds.push("http".into());
+        capabilities.kinds.push("dns".into());
         if traceroute::available(false) || traceroute::available(true) {
             capabilities.kinds.push("traceroute".into());
         }
@@ -61,6 +63,10 @@ impl Prober for SystemProber {
             .unwrap_or(HopOutcome::Failed(
                 crate::protocol::error_code::INTERNAL_ERROR,
             ))
+    }
+
+    async fn dns_query(&self, request: DnsRequest) -> DnsOutcome {
+        dns::lookup(&request).await
     }
 
     async fn http_once(&self, request: HttpRequest) -> HttpOutcome {

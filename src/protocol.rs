@@ -158,6 +158,7 @@ pub enum TaskKind {
     Tcp,
     Http,
     Traceroute,
+    Dns,
     /// A kind from a newer backend. The task is answered with `unsupported_kind`, not dropped.
     #[serde(other)]
     Unknown,
@@ -200,7 +201,8 @@ pub enum Scheme {
 
 /// Settings of a task. Which ones matter depends on the kind: ping and tcp use `count`,
 /// `interval_ms` and `timeout_ms`; http uses `scheme`, `path`, `timeout_ms` (for the whole request,
-/// redirects included) and `max_redirects`; traceroute uses `max_hops` and `timeout_ms` (per hop).
+/// redirects included) and `max_redirects`; traceroute uses `max_hops` and `timeout_ms` (per hop);
+/// dns uses `record_type`, `resolver_ip` and `timeout_ms`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TaskOptions {
     #[serde(default = "default_count")]
@@ -216,6 +218,12 @@ pub struct TaskOptions {
     pub max_redirects: Option<u8>,
     #[serde(default)]
     pub max_hops: Option<u8>,
+    /// dns: the record type to ask for (`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`).
+    #[serde(default)]
+    pub record_type: Option<String>,
+    /// dns: ask this public resolver (port 53). Absent means the node's own resolvers.
+    #[serde(default)]
+    pub resolver_ip: Option<String>,
 }
 
 fn default_count() -> u32 {
@@ -236,6 +244,8 @@ impl Default for TaskOptions {
             path: None,
             max_redirects: None,
             max_hops: None,
+            record_type: None,
+            resolver_ip: None,
         }
     }
 }

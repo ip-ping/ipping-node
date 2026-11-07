@@ -8,6 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod dns;
 mod http;
 mod traceroute;
 
@@ -117,6 +118,12 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             return;
         }
 
+        // A DNS check asks about the name; it never resolves it for a probe of its own.
+        if task.kind == TaskKind::Dns {
+            self.run_dns(&task, &job).await;
+            return;
+        }
+
         let dns_started = Instant::now();
         let resolution = tokio::select! {
             () = job.cancel.cancelled() => return,
@@ -139,8 +146,8 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             TaskKind::Ping | TaskKind::Tcp => self.run_series(&task, &job, ip, &resolved).await,
             TaskKind::Http => self.run_http(&task, &job, ip, &resolved, dns).await,
             TaskKind::Traceroute => self.run_traceroute(&task, &job, ip, &resolved).await,
-            // `check` has already refused this.
-            TaskKind::Unknown => {}
+            // Handled above, before any name is resolved; `check` has already refused the other.
+            TaskKind::Dns | TaskKind::Unknown => {}
         }
     }
 
@@ -151,6 +158,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             TaskKind::Tcp => "tcp",
             TaskKind::Http => "http",
             TaskKind::Traceroute => "traceroute",
+            TaskKind::Dns => "dns",
             TaskKind::Unknown => "",
         };
         if !self.capabilities.kinds.iter().any(|k| k == advertised) {
@@ -171,6 +179,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             }
             TaskKind::Http => self.check_http(task),
             TaskKind::Traceroute => self.check_traceroute(task),
+            TaskKind::Dns => self.dns_plan(task).map(|_| ()),
             TaskKind::Unknown => Err(Failure::new(
                 error_code::UNSUPPORTED_KIND,
                 "This node does not run that kind of measurement.",
@@ -474,6 +483,22 @@ impl Job {
                 attempt_id: self.attempt_id.clone(),
                 status: ResultStatus::Completed,
                 tested_ip: Some(ip.to_string()),
+                resolved_ips: resolved.iter().map(ToString::to_string).collect(),
+                error_code: None,
+                error_message: None,
+            })
+            .await;
+    }
+
+    /// A DNS check ends without a tested address: what it learned is in its sample.
+    async fn completed_with_answers(&self, resolved: &[IpAddr]) {
+        let _ = self
+            .out
+            .send(ClientFrame::TaskResult {
+                task_id: self.task_id.clone(),
+                attempt_id: self.attempt_id.clone(),
+                status: ResultStatus::Completed,
+                tested_ip: None,
                 resolved_ips: resolved.iter().map(ToString::to_string).collect(),
                 error_code: None,
                 error_message: None,

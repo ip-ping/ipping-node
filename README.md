@@ -3,10 +3,10 @@
 The measurement node for **ipping**, a self-hostable distributed network diagnostics service.
 A node is a small Rust program: it connects *out* to the backend, receives typed tasks (never
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
-connect, HTTP request, traceroute**) and reports structured results.
+connect, HTTP request, traceroute, DNS lookup**) and reports structured results.
 
-Current release: **v0.3.3**. It works with any backend for ping; TCP, HTTP and traceroute need
-backend **v0.3.0** or newer. Binaries are published for Linux `amd64` and `arm64` (built against
+Current release: **v0.3.3** (the DNS check described here is in the next one). It works with any
+backend for ping; TCP, HTTP and traceroute need backend **v0.3.0** or newer. Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
 | Repository | Role |
@@ -109,6 +109,7 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | `ping` | an ICMP echo | 1 to 10 per task, 56-byte payload, public addresses only |
 | `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
 | `traceroute` | one hop (three probes) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address |
+| `dns` | one question to one resolver, answered in full | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`; the resolver is a public one the backend names (port 53) or this node's own (`/etc/resolv.conf`); names that are internal (`.lan`, `.corp`, single labels ...) are refused; from the node's own resolver, private addresses in an answer are counted but never reported |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
 
 The node refuses any task for a kind it did not advertise, whatever the backend sends. Allowed
@@ -186,7 +187,12 @@ that answers the WebSocket upgrade with HTTP errors.
 * **Nothing is sent to a server that cannot be authenticated.** A certificate that does not verify
   is described, and the connection is dropped before any request.
 * **No private network in a result.** A traceroute hop that is not a public address is reported as
-  "private", never as an address.
+  "private", never as an address, and a DNS answer from the node's own resolver that is not a public
+  address is only counted.
+* **DNS replies are checked, not trusted.** The reply must carry the id and the question that were
+  sent (anything else is ignored while the node keeps waiting), compression pointers may only point
+  backwards, lengths are checked, at most 32 records are kept and a long TXT is shortened. A cut-short
+  UDP answer is fetched again over TCP.
 * **No `--privileged`, no Docker socket.** ICMP uses unprivileged ping sockets where the kernel
   allows them; `CAP_NET_RAW` is the fallback.
 
@@ -208,7 +214,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
 - [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0 (then v0.3.1 to v0.3.3: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
-- [ ] DNS checks (compare answers across nodes)
+- [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
 
 ## License
 

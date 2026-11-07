@@ -4,6 +4,23 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-07: DNS checks
+- A new kind, `dns`: ask one resolver one question (`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT` or `SOA`)
+  and report the answer in full: the response code (`NOERROR`, `NXDOMAIN`, `SERVFAIL` ...), every
+  record with its TTL, whether the answer was authoritative, and how long it took. "No such name" is
+  an answer, not a failure; silence is a timeout.
+- The DNS client is written for this node (no resolver library): one query with EDNS0, UDP first, TCP
+  if the answer was cut short. A reply must carry the id and the question that were sent or it is
+  ignored; names are followed only backwards, lengths are checked, records are capped. 12 unit tests
+  and 8 tests against a fake server on loopback (UDP answer, forged and stray replies, truncation
+  and the TCP fallback, silence, a closed port, garbage) run on macOS and Linux.
+- Who may be asked: a public resolver the backend names (port 53, a public address) or the node's own
+  resolvers. What is shown: from the node's own resolver, answers that are private addresses are counted
+  and left out, because that resolver may know names that exist only inside the operator's network.
+  Internal names (`.lan`, `.home.arpa`, `.corp`, single labels ...) are refused. 9 runner tests.
+- The node advertises `dns` in its hello. The protocol change is additive: new `kind`, new task options
+  `record_type` and `resolver_ip`, and a new sample `detail` shape, with example frames in the fixtures.
+
 ### 2026-11-07: README brought up to date
 - The README now says what the node is today (four kinds, Linux amd64 and arm64, glibc 2.31), lists
   every option with its environment variable, the default allowed ports and how the HTTP client works,

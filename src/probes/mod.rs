@@ -1,6 +1,7 @@
 //! Probe implementations. Each probe type has fixed semantics and hard limits; there is no
 //! way to ask for a custom packet size, flood mode or a sweep.
 
+pub mod dns;
 pub mod http;
 pub mod icmp;
 pub mod system;
@@ -71,6 +72,12 @@ pub trait Prober: Send + Sync + 'static {
     ) -> impl Future<Output = traceroute::HopOutcome> + Send {
         let _ = (ip, ttl, seq, timeout);
         async { traceroute::HopOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
+    }
+
+    /// Ask one DNS question of one resolver and read the answer.
+    fn dns_query(&self, request: dns::DnsRequest) -> impl Future<Output = dns::DnsOutcome> + Send {
+        let _ = request;
+        async { dns::DnsOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
     }
 
     /// Make one HTTP request to one address: connect, optionally TLS, send a GET, read the
