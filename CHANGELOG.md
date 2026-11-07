@@ -4,6 +4,15 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-07: README brought up to date
+- The README now says what the node is today (four kinds, Linux amd64 and arm64, glibc 2.31), lists
+  every option with its environment variable, the default allowed ports and how the HTTP client works,
+  what has and has not been tested for IPv6, a troubleshooting section (permission denied on the state
+  directory, plain-http refusal, waiting for approval, coming back after a site update, ICMP
+  permissions), the development commands including the Linux-only checks and the namespace traceroute
+  test, the design rules about redirects, unauthenticated servers and private hops, and a roadmap
+  that includes v0.3.1 to v0.3.3.
+
 ## v0.3.3 (2026-11-06)
 
 ### fix: v0.3.2 refused to start on any install that allows plain http://

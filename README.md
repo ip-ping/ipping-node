@@ -2,8 +2,12 @@
 
 The measurement node for **ipping**, a self-hostable distributed network diagnostics service.
 A node is a small Rust program: it connects *out* to the backend, receives typed tasks (never
-shell commands), checks them against its own safety policy, runs bounded probes and reports
-structured results.
+shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
+connect, HTTP request, traceroute**) and reports structured results.
+
+Current release: **v0.3.3**. It works with any backend for ping; TCP, HTTP and traceroute need
+backend **v0.3.0** or newer. Binaries are published for Linux `amd64` and `arm64` (built against
+glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
 | Repository | Role |
 |---|---|
@@ -48,11 +52,13 @@ behind it goes to `/var/log/ipping-node-install.log` and is shown only if a step
 (a mistyped token, say) can simply be run again.
 
 Run it without arguments for an interactive menu. Installs are repeatable (a second run keeps the
-node's identity), updates keep the previous release for rollback and roll back by themselves if the
-new one does not start, and `uninstall` keeps the node's identity unless you add `--purge`.
+node's identity and repairs the ownership of its state files), updates keep the previous release
+for rollback and roll back by themselves if the new one does not start, and `uninstall` keeps the
+node's identity unless you add `--purge`. Options: `--name`, `--country`, `--city`, `--provider`
+(what the public node list shows), `--version vX.Y.Z`, `--binary FILE`.
 `--allow-insecure` (or `--insecure`) is needed to connect to a plain `http://` backend on another host
 (the default central install serves HTTP until you give it a domain); the credential then travels
-unencrypted.
+unencrypted. The layout follows the width of the terminal and is plain text in a pipe.
 
 Direct mode runs as an unprivileged `ipping-node` user under a locked-down systemd unit. It
 checks `net.ipv4.ping_group_range`; only if the user cannot send unprivileged pings does the unit
@@ -76,11 +82,22 @@ ipping-node --state-dir ~/.ipping-node run
 ```
 
 The state directory (default `/var/lib/ipping-node`) holds `node.json` and `credential`, both
-mode `0600`. The credential is shown once at enrollment and is sent only in an `Authorization`
-header; a plain `http://` backend is refused unless it is on this machine. `IPPING_NODE_LOG`
-sets the log filter (default `info`). Every option can also be given as an `IPPING_NODE_*`
-environment variable, and `run` will enroll by itself when `IPPING_NODE_SERVER` and
-`IPPING_NODE_ENROLL_TOKEN` are set and no credential exists yet (convenient for containers).
+mode `0600`, and everything in it must belong to the account the node runs as. The credential is
+shown once at enrollment and is sent only in an `Authorization` header; a plain `http://` backend is
+refused unless it is on this machine (or you pass `--insecure`). `run` will enroll by itself when
+`IPPING_NODE_SERVER` and `IPPING_NODE_ENROLL_TOKEN` are set and no credential exists yet (convenient
+for containers).
+
+| Option | Environment variable | Meaning |
+|---|---|---|
+| `--state-dir DIR` | `IPPING_NODE_STATE_DIR` | where the identity lives (default `/var/lib/ipping-node`) |
+| `--server URL` | `IPPING_NODE_SERVER` | the backend (for `run`, overrides the one saved at enrollment) |
+| `--token T` | `IPPING_NODE_ENROLL_TOKEN` | the single-use enrollment token |
+| `--name`, `--country`, `--city`, `--region`, `--provider`, `--latitude`, `--longitude`, `--asn` | `IPPING_NODE_NAME`, `..._COUNTRY`, ... | what the node tells the site about itself (coordinates feed the location estimate) |
+| `--insecure` (`--allow-insecure`) | `IPPING_NODE_ALLOW_INSECURE=1` | allow plain `http://` to a backend on another host |
+| `--ports LIST` | `IPPING_NODE_PORTS` | destination ports for TCP and HTTP (a comma-separated list, or `any`) |
+| `--max-tasks N` | `IPPING_NODE_MAX_TASKS` | most tasks at once (default 8, and never above what the backend allows) |
+| | `IPPING_NODE_LOG` | log filter (default `info`) |
 
 ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that means
 `net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`.
@@ -94,7 +111,16 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | `traceroute` | one hop (three probes) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
 
-The node refuses any task for a kind it did not advertise, whatever the backend sends.
+The node refuses any task for a kind it did not advertise, whatever the backend sends. Allowed
+ports by default: 22, 25, 53, 80, 110, 143, 443, 465, 587, 853, 993, 995, 3306, 3389, 5432, 8080 and
+8443; a node connects only to ports on its own list, so a port an administrator adds on the site also
+has to be added here. HTTP is a small HTTP/1.1 client written for measuring: it times DNS, connect,
+TLS and first byte separately, verifies certificates against the Mozilla roots, and reports the
+certificate's issuer, subject and validity.
+
+IPv6 works like IPv4 (same policy, same code paths) when the node has a route for it. It was tested
+over the IPv6 loopback and, for traceroute, through real routers in network namespaces; a route to
+the public IPv6 internet has not been tested.
 
 ## Docker
 
@@ -110,13 +136,41 @@ unprivileged user and needs **no** `--privileged`, no `CAP_NET_RAW` and no Docke
 `net.ipv4.ping_group_range` sysctl that unprivileged ICMP needs. The default Docker bridge has no
 IPv6, so such a node reports IPv4 only; use host or an IPv6-enabled network to measure IPv6.
 
+## Troubleshooting
+
+`sudo bash ipping-node.sh doctor` checks the service, the state directory, the credential, ICMP
+permission and that the site answers, and says what to try for each failing check. `status` tells
+you whether the site has approved the node. Common cases:
+
+* **`cannot read ...: Permission denied`**: the state files belong to another account (for example
+  `enroll` was run as root). Run the installer again (`install` or `update` repairs it), or
+  `sudo chown -R ipping-node: /var/lib/ipping-node`.
+* **"refused to send credentials over plain http://"**: the site is plain HTTP on another host. Use
+  HTTPS, or `--insecure` if you trust the network.
+* **"waiting for an administrator to approve"**: approve the node in the site's *Admin > Nodes*.
+* **Offline after the site was updated**: the node retries about every second at first and then
+  backs off (up to a minute). Only a refused credential (HTTP 401 or 403, a revoked or rotated key)
+  makes it wait the full minute; a 502 from the proxy while the backend restarts does not.
+* **Ping or traceroute fails with a permission error**: the node's group must be in
+  `net.ipv4.ping_group_range` (the installer checks this and adds `CAP_NET_RAW` only if it must).
+  Traceroute is Linux only and is not advertised where it cannot work.
+
 ## Develop
 
 ```bash
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
+bash tests/installer.sh                              # the installer's own logic, no root needed
+shellcheck -S style ipping-node.sh tests/installer.sh
+sudo tests/netns/traceroute.sh                       # Linux: traceroute through real routers (network namespaces)
 ```
+
+Linux-only code (traceroute) is not compiled on macOS, so also run clippy on Linux, for example
+`docker run --rm -v "$PWD":/src -w /src rust:1 cargo clippy --all-targets -- -D warnings`. CI runs
+the namespace test on every push. The live tests use real sockets on the loopback interface, a local
+TLS server with a throwaway CA (trusted, expired, wrong name, unknown issuer) and a fake backend
+that answers the WebSocket upgrade with HTTP errors.
 
 ## Design rules
 
@@ -126,6 +180,13 @@ cargo fmt --all
   backend already did; a compromised or buggy backend cannot aim a node at private networks.
 * **Bounded.** Concurrency, buffering and task lifetime all have limits on the node itself.
 * **Honest timing.** Round-trip times come from a monotonic clock.
+* **Redirects are new destinations.** An HTTP redirect is only followed if asked for, and every hop
+  is resolved on the node and checked again: public addresses, allowed ports, http/https, no
+  credentials in the URL.
+* **Nothing is sent to a server that cannot be authenticated.** A certificate that does not verify
+  is described, and the connection is dropped before any request.
+* **No private network in a result.** A traceroute hop that is not a public address is reported as
+  "private", never as an address.
 * **No `--privileged`, no Docker socket.** ICMP uses unprivileged ping sockets where the kernel
   allows them; `CAP_NET_RAW` is the fallback.
 
@@ -145,6 +206,9 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
+- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0 (then v0.3.1 to v0.3.3: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
+- [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
+- [ ] DNS checks (compare answers across nodes)
 
 ## License
 
