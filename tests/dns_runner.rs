@@ -347,3 +347,32 @@ async fn a_node_that_does_not_advertise_dns_refuses_the_task() {
     assert_eq!(failed_with(&frames), error_code::UNSUPPORTED_KIND);
     assert!(prober.asked.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn an_answer_too_big_for_a_sample_is_cut_and_says_so() {
+    // 32 TXT records of 500 characters: about 17 KB as JSON, more than the backend keeps.
+    let records = (0..32)
+        .map(|n| record(RecordType::Txt, &format!("{n:03}{}", "x".repeat(497)), None))
+        .collect();
+    let frames = run(
+        ScriptedDns::new(answer(records)),
+        &["dns"],
+        simple(Some("1.1.1.1")),
+    )
+    .await;
+    let (_, _, detail) = sample(&frames);
+    let detail = detail.unwrap();
+    let kept = detail["answers"].as_array().unwrap().len();
+    assert!((1..32).contains(&kept), "kept {kept}");
+    assert_eq!(detail["truncated"], true);
+    assert!(
+        detail.to_string().len() <= 7000,
+        "{}",
+        detail.to_string().len()
+    );
+    assert_eq!(
+        detail["answers"][0]["data"].as_str().unwrap()[..3],
+        *"000",
+        "the first ones are kept"
+    );
+}

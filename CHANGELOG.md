@@ -17,7 +17,8 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 - Who may be asked: a public resolver the backend names (port 53, a public address) or the node's own
   resolvers. What is shown: from the node's own resolver, answers that are private addresses are counted
   and left out, because that resolver may know names that exist only inside the operator's network.
-  Internal names (`.lan`, `.home.arpa`, `.corp`, single labels ...) are refused. 9 runner tests.
+  Internal names (`.lan`, `.home.arpa`, `.corp`, single labels ...) are refused. An answer too big for a
+  sample (backend limit 8 KiB) is cut and marked `truncated`. 10 runner tests.
 - The node advertises `dns` in its hello. The protocol change is additive: new `kind`, new task options
   `record_type` and `resolver_ip`, and a new sample `detail` shape, with example frames in the fixtures.
 

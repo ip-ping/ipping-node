@@ -17,6 +17,10 @@ use crate::probes::dns::{DnsAnswer, DnsOutcome, DnsRequest, RecordType, Resolver
 use crate::protocol::{SampleStatus, Task, error_code};
 use crate::resolve::Resolve;
 
+/// The most a sample's detail may weigh once written as JSON. The backend drops a detail above 8 KiB, so
+/// the node leaves some room and says the answer was cut short instead.
+const MAX_DETAIL_BYTES: usize = 7000;
+
 /// What the sample of a DNS check says. Mirrors the backend's `DnsDetail`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DnsDetail {
@@ -197,5 +201,12 @@ fn describe(plan: &DnsPlan, answer: DnsAnswer) -> (DnsDetail, Vec<IpAddr>) {
         answers,
         redacted,
     };
+    let mut detail = detail;
+    while detail.answers.len() > 1
+        && serde_json::to_vec(&detail).map_or(0, |bytes| bytes.len()) > MAX_DETAIL_BYTES
+    {
+        detail.answers.pop();
+        detail.truncated = true;
+    }
     (detail, addresses)
 }
