@@ -78,24 +78,16 @@ impl Resolve for NoDns {
     }
 }
 
-/// Set by `tests/netns/traceroute.sh`: `IPPING_TRACE_DEST=10.0.3.2`,
-/// `IPPING_TRACE_HOPS=10.0.1.2,10.0.2.2` (the routers in between, in order).
-#[tokio::test]
-async fn through_real_routers_in_network_namespaces() {
-    let (Ok(destination), Ok(hops)) = (
-        std::env::var("IPPING_TRACE_DEST"),
-        std::env::var("IPPING_TRACE_HOPS"),
-    ) else {
-        eprintln!("skipped: run tests/netns/traceroute.sh as root to build the test network");
-        return;
-    };
-    let routers: Vec<&str> = hops.split(',').collect();
+type Hop = (u32, SampleStatus, Option<u64>, serde_json::Value);
 
+/// Run a traceroute with a test policy (the routers of the lab are private addresses) and return
+/// the hop samples and all frames.
+async fn trace(destination: &str, options: serde_json::Value) -> (Vec<Hop>, Vec<ClientFrame>) {
     let expires = time::OffsetDateTime::now_utc() + time::Duration::seconds(60);
     let frame = json!({
         "type": "task", "task_id": "t", "attempt_id": "a", "kind": "traceroute",
         "target": {"ip": destination},
-        "options": {"timeout_ms": 1500, "max_hops": 10},
+        "options": options,
         "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap(),
     });
     let ServerFrame::Task(task) = serde_json::from_value(frame).unwrap() else {
@@ -106,7 +98,6 @@ async fn through_real_routers_in_network_namespaces() {
         ipv4: true,
         ipv6: true,
     };
-    // The routers are private addresses, which only a test policy will name.
     let runner = Runner::new(
         Arc::new(SystemProber::new()),
         Arc::new(NoDns),
@@ -119,8 +110,7 @@ async fn through_real_routers_in_network_namespaces() {
     while let Ok(frame) = rx.try_recv() {
         frames.push(frame);
     }
-
-    let samples: Vec<_> = frames
+    let samples: Vec<Hop> = frames
         .iter()
         .filter_map(|f| match f {
             ClientFrame::Sample {
@@ -134,6 +124,38 @@ async fn through_real_routers_in_network_namespaces() {
         })
         .collect();
     eprintln!("{samples:#?}");
+    (samples, frames)
+}
+
+/// The lab, from `tests/netns/traceroute.sh`: `IPPING_TRACE_DEST=10.0.3.2`,
+/// `IPPING_TRACE_HOPS=10.0.1.2,10.0.2.2` (the routers in between, in order).
+fn lab() -> Option<(String, Vec<String>)> {
+    let (Ok(destination), Ok(hops)) = (
+        std::env::var("IPPING_TRACE_DEST"),
+        std::env::var("IPPING_TRACE_HOPS"),
+    ) else {
+        eprintln!("skipped: run tests/netns/traceroute.sh as root to build the test network");
+        return None;
+    };
+    Some((destination, hops.split(',').map(str::to_string).collect()))
+}
+
+fn completed(frames: &[ClientFrame]) -> bool {
+    matches!(
+        frames.last(),
+        Some(ClientFrame::TaskResult {
+            status: ResultStatus::Completed,
+            ..
+        })
+    )
+}
+
+#[tokio::test]
+async fn through_real_routers_in_network_namespaces() {
+    let Some((destination, routers)) = lab() else {
+        return;
+    };
+    let (samples, frames) = trace(&destination, json!({"timeout_ms": 1500, "max_hops": 10})).await;
 
     assert_eq!(
         samples.len(),
@@ -156,17 +178,52 @@ async fn through_real_routers_in_network_namespaces() {
             "hop {}: {answered} of 3 probes answered",
             index + 1
         );
+        assert!(
+            detail.get("sent").is_none(),
+            "one round carries no probe count"
+        );
     }
     let (_, status, rtt, last) = samples.last().unwrap();
     assert_eq!(*status, SampleStatus::Ok);
     assert_eq!(last["reached"], true);
     assert_eq!(last["ip"], destination);
     assert!(rtt.unwrap() > 0);
-    assert!(matches!(
-        frames.last(),
-        Some(ClientFrame::TaskResult {
-            status: ResultStatus::Completed,
-            ..
-        })
-    ));
+    assert!(completed(&frames));
+}
+
+/// The same route traced four times, like `mtr`: still one sample per hop, each with every reply.
+#[tokio::test]
+async fn through_real_routers_over_several_rounds() {
+    let Some((destination, routers)) = lab() else {
+        return;
+    };
+    let (samples, frames) = trace(
+        &destination,
+        json!({"timeout_ms": 1500, "max_hops": 10, "count": 4, "interval_ms": 300}),
+    )
+    .await;
+
+    assert_eq!(samples.len(), routers.len() + 1);
+    for (index, (seq, status, _, detail)) in samples.iter().enumerate() {
+        assert_eq!(*seq as usize, index);
+        assert_eq!(*status, SampleStatus::Ok, "hop {}", index + 1);
+        assert_eq!(
+            detail["sent"], 6,
+            "three probes, then one for each of three more rounds"
+        );
+        let answered = detail["rtts_us"].as_array().unwrap().len();
+        assert!(
+            (1..=6).contains(&answered),
+            "hop {}: {answered} of 6 probes answered",
+            index + 1
+        );
+        if index < routers.len() {
+            assert_eq!(detail["ip"], routers[index], "hop {}", index + 1);
+            assert_eq!(detail["reached"], false);
+        }
+    }
+    let (_, _, _, last) = samples.last().unwrap();
+    assert_eq!(last["reached"], true);
+    assert_eq!(last["ip"], destination);
+    assert!(completed(&frames));
 }

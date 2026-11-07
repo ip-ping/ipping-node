@@ -2,6 +2,25 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## Unreleased
+
+### 2026-11-07: traceroute in rounds, like mtr
+- A traceroute task with `count` above one (up to 10 rounds, `interval_ms` apart) repeats the trace.
+  The first round is the trace as before (three probes to each hop, stops at the destination or after
+  eight silent hops); every later round sends one probe to each hop that was found, all hops at once.
+  Probing hops at the same time but rounds a second apart is what `mtr` does: a router answers a
+  burst to itself with less and less, which would look like loss that is not there.
+- A hop is still one sample, sent once at the end with every round-trip time and `sent`, the number of
+  probes it got, so a hop's loss is `1 - len(rtts_us) / sent`. A single round is unchanged on the
+  wire: no `sent`, three probes, hops reported live as they are found. A repeated trace reports
+  nothing until its last round is done, and a task that is cancelled or expires in between reports
+  nothing at all.
+- The node refuses `count` outside 1 to 10 and an interval outside 200 ms to 5 s for a traceroute.
+- 5 runner tests with scripted hops (replies and loss over rounds, spacing, cancelling, limits) and a
+  second test through real routers in network namespaces for IPv4 and IPv6. Example frames in the
+  fixtures: `task_traceroute_rounds.json` and `sample_hop_rounds.json`.
+- Needs a backend that sends `count` for a traceroute (the next one); against v0.4.x it keeps tracing once.
+
 ## v0.4.0 (2026-11-07)
 
 ### feat: DNS checks
