@@ -2,7 +2,11 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.4.0 (2026-11-07)
+
+### feat: DNS checks
+The node can ask a resolver about a name (a new `dns` kind, advertised in its hello). It needs backend v0.4.0 to
+be given such tasks; against an older backend it simply never gets one.
 
 ### 2026-11-07: DNS checks
 - A new kind, `dns`: ask one resolver one question (`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT` or `SOA`)

@@ -5,8 +5,8 @@ A node is a small Rust program: it connects *out* to the backend, receives typed
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
 connect, HTTP request, traceroute, DNS lookup**) and reports structured results.
 
-Current release: **v0.3.3** (the DNS check described here is in the next one). It works with any
-backend for ping; TCP, HTTP and traceroute need backend **v0.3.0** or newer. Binaries are published for Linux `amd64` and `arm64` (built against
+Current release: **v0.4.0**. It works with any backend for ping; TCP, HTTP and traceroute need backend
+**v0.3.0** or newer, and DNS checks need backend **v0.4.0**. Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
 | Repository | Role |
@@ -212,7 +212,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
-- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0 (then v0.3.1 to v0.3.3: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
+- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
 
