@@ -20,8 +20,8 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
   before anything is sent; 7 runner tests with scripted handshakes and 8 tests against real sockets with a test CA
   (trusted, address certificate, wrong name, expired, unknown issuer, 60 names, a server that is not TLS, a closed
   port, silence). Example frames `task_tls.json` and `sample_tls.json`; `hello_all_kinds.json` brought up to date.
-- The node advertises `tls` in its hello. A backend that does not know it never asks for it (needs backend v0.5
-  or newer for tasks).
+- The node advertises `tls` in its hello. A backend that does not know it never asks for it (tasks
+  need a backend newer than v0.4.1, the one with schema migration 0009).
 
 ### 2026-11-07: traceroute in rounds, like mtr
 - A traceroute task with `count` above one (up to 10 rounds, `interval_ms` apart) repeats the trace.
