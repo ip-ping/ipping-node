@@ -3,15 +3,17 @@
   "protocol_versions": [
     1
   ],
-  "node_version": "0.3.0",
+  "node_version": "0.4.1",
   "capabilities": {
     "kinds": [
       "ping",
       "tcp",
       "http",
-      "traceroute"
+      "traceroute",
+      "dns",
+      "tls"
     ],
     "ipv4": true,
-    "ipv6": false
+    "ipv6": true
   }
 }

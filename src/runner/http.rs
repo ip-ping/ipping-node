@@ -81,7 +81,7 @@ fn valid_target(path: &str) -> bool {
 impl<P: Prober, R: Resolve> Runner<P, R> {
     /// The name this task presents: the one the backend gave with a pinned address, the hostname
     /// being resolved, or (for a bare address) the address itself.
-    fn presented_host(&self, task: &Task) -> Result<String, Failure> {
+    pub(super) fn presented_host(&self, task: &Task) -> Result<String, Failure> {
         let name = task
             .target
             .server_name

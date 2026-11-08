@@ -31,6 +31,7 @@ use tokio_rustls::TlsConnector;
 
 use super::ConnectOutcome;
 use super::tcp::classify;
+use super::tls::{Finding, MAX_NAME_BYTES, MAX_NAMES, TlsOutcome, TlsRequest};
 use crate::protocol::error_code;
 
 /// Longest response head the node will read. A server that sends more is not speaking HTTP to us.
@@ -275,6 +276,94 @@ impl HttpClient {
         Self { provider, verifier }
     }
 
+    /// A client configuration that verifies like the web does but never fails the handshake over a bad
+    /// certificate: the reason goes into `failure` instead.
+    fn client_config(
+        &self,
+        failure: Arc<Mutex<Option<String>>>,
+        alpn: Vec<Vec<u8>>,
+    ) -> ClientConfig {
+        let mut config = ClientConfig::builder_with_provider(self.provider.clone())
+            .with_safe_default_protocol_versions()
+            .expect("ring supports the default protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(Recording {
+                inner: self.verifier.clone(),
+                failure,
+            }))
+            .with_no_client_auth();
+        config.alpn_protocols = alpn;
+        config
+    }
+
+    /// Connect and complete a TLS handshake, then read what the certificate says and hang up. No
+    /// request is sent, over any connection, trusted or not.
+    pub async fn handshake(&self, request: &TlsRequest) -> TlsOutcome {
+        let deadline = Instant::now() + request.timeout;
+        let started = Instant::now();
+        let stream = match timeout_at(
+            deadline,
+            TcpStream::connect(SocketAddr::new(request.ip, request.port)),
+        )
+        .await
+        {
+            Err(_) => return TlsOutcome::Timeout,
+            Ok(Err(error)) => {
+                return match classify(&error, started.elapsed()) {
+                    ConnectOutcome::Refused(_) => TlsOutcome::failed(
+                        error_code::CONNECTION_REFUSED,
+                        "Nothing accepts connections on that port.",
+                    ),
+                    ConnectOutcome::Timeout => TlsOutcome::Timeout,
+                    ConnectOutcome::Failed(code) => TlsOutcome::failed(code, "Could not connect."),
+                    ConnectOutcome::Connected(_) => unreachable!("classify is for errors"),
+                };
+            }
+            Ok(Ok(stream)) => stream,
+        };
+        let connect = started.elapsed();
+        let _ = stream.set_nodelay(true);
+        let Ok(server_name) = ServerName::try_from(request.server_name.clone()) else {
+            return TlsOutcome::failed(
+                error_code::TLS_ERROR,
+                "The server name is not valid for TLS.",
+            );
+        };
+        let failure = Arc::new(Mutex::new(None));
+        let connector = TlsConnector::from(Arc::new(self.client_config(failure.clone(), vec![])));
+        let tls_started = Instant::now();
+        let mut tls = match timeout_at(deadline, connector.connect(server_name, stream)).await {
+            Err(_) => return TlsOutcome::Timeout,
+            Ok(Err(error)) => {
+                return TlsOutcome::Failed {
+                    code: error_code::TLS_ERROR,
+                    message: format!(
+                        "The TLS handshake failed: {}",
+                        clean(error.to_string().as_bytes(), 160)
+                    ),
+                    connect: Some(connect),
+                };
+            }
+            Ok(Ok(tls)) => tls,
+        };
+        let handshake = tls_started.elapsed();
+        let verify_error = failure.lock().expect("verifier lock").clone();
+        let (info, names, chain) = {
+            let connection = tls.get_ref().1;
+            let (names, chain) = certificate_names(connection);
+            (tls_info(connection, verify_error), names, chain)
+        };
+        // Say goodbye properly (a close_notify), but never wait for the other side to answer.
+        let _ = timeout_at(Instant::now() + Duration::from_millis(200), tls.shutdown()).await;
+        TlsOutcome::Handshake(Finding {
+            connect,
+            handshake,
+            info,
+            names,
+            chain,
+        })
+    }
+
     pub async fn fetch(&self, request: &HttpRequest) -> HttpOutcome {
         let deadline = Instant::now() + request.timeout;
         let started = Instant::now();
@@ -312,16 +401,7 @@ impl HttpClient {
                         "The server name is not valid for TLS.",
                     );
                 };
-                let mut config = ClientConfig::builder_with_provider(self.provider.clone())
-                    .with_safe_default_protocol_versions()
-                    .expect("ring supports the default protocol versions")
-                    .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(Recording {
-                        inner: self.verifier.clone(),
-                        failure: failure.clone(),
-                    }))
-                    .with_no_client_auth();
-                config.alpn_protocols = vec![b"http/1.1".to_vec()];
+                let config = self.client_config(failure.clone(), vec![b"http/1.1".to_vec()]);
                 let connector = TlsConnector::from(Arc::new(config));
                 let tls = match timeout_at(deadline, connector.connect(server_name, stream)).await {
                     Err(_) => return HttpOutcome::Timeout,
@@ -464,6 +544,40 @@ fn tls_info(connection: &rustls::ClientConnection, verify_error: Option<String>)
         info.not_after = rfc3339(certificate.validity().not_after.to_datetime());
     }
     info
+}
+
+/// The names the server's certificate is valid for, and how many certificates it sent. Only what fits
+/// in a result is kept, and control characters are replaced.
+fn certificate_names(connection: &rustls::ClientConnection) -> (Vec<String>, usize) {
+    use x509_parser::extensions::GeneralName;
+
+    let certificates = connection.peer_certificates().unwrap_or_default();
+    let mut names = vec![];
+    if let Some(leaf) = certificates.first()
+        && let Ok((_, certificate)) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        && let Ok(Some(alternative)) = certificate.subject_alternative_name()
+    {
+        let mut bytes = 0;
+        for name in &alternative.value.general_names {
+            let text = match name {
+                GeneralName::DNSName(dns) => clean(dns.as_bytes(), 255),
+                GeneralName::IPAddress(raw) => match raw.len() {
+                    4 => IpAddr::from(<[u8; 4]>::try_from(*raw).expect("four bytes")).to_string(),
+                    16 => {
+                        IpAddr::from(<[u8; 16]>::try_from(*raw).expect("sixteen bytes")).to_string()
+                    }
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            bytes += text.len();
+            if names.len() >= MAX_NAMES || bytes > MAX_NAME_BYTES {
+                break;
+            }
+            names.push(text);
+        }
+    }
+    (names, certificates.len())
 }
 
 struct Head {

@@ -3,7 +3,7 @@
 The measurement node for **ipping**, a self-hostable distributed network diagnostics service.
 A node is a small Rust program: it connects *out* to the backend, receives typed tasks (never
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
-connect, HTTP request, traceroute, DNS lookup**) and reports structured results.
+connect, HTTP request, traceroute, DNS lookup, certificate check**) and reports structured results.
 
 Current release: **v0.4.0**. It works with any backend for ping; TCP, HTTP and traceroute need backend
 **v0.3.0** or newer, and DNS checks need backend **v0.4.0**. Binaries are published for Linux `amd64` and `arm64` (built against
@@ -110,6 +110,7 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
 | `traceroute` | one hop (three probes, or more with `count` above one) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address. With `count` rounds the trace is repeated like `mtr`: one probe per hop and round, `interval_ms` apart, and each hop is reported once with every reply and how many probes it got |
 | `dns` | one question to one resolver, answered in full | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`; the resolver is a public one the backend names (port 53) or this node's own (`/etc/resolv.conf`); names that are internal (`.lan`, `.corp`, single labels ...) are refused; from the node's own resolver, private addresses in an answer are counted but never reported |
+| `tls` | one TLS handshake with no request after it | same ports as TCP; the certificate is checked against the Mozilla roots for the name presented (or the address, for a bare address) and a certificate that does not verify is still described, with the reason; it reports the version, cipher, subject, issuer, validity, up to 24 names the certificate is valid for and how many certificates the server sent |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
 
 The node refuses any task for a kind it did not advertise, whatever the backend sends. Allowed
@@ -215,6 +216,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
+- [x] Certificate checks (a handshake with no request: what the certificate says and whether this node trusts it)
 - [x] Repeated traceroute rounds, like `mtr` (loss and spread per hop; tested through real routers in network namespaces)
 
 ## License

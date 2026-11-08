@@ -4,6 +4,25 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### 2026-11-08: certificate checks
+- A new kind, `tls`: connect to an address, complete the TLS handshake for a name (or for the address itself)
+  and report what the certificate says, then hang up. **No request is sent**, so it works for any TLS service on
+  an allowed port (a web server, a mail server) and a test proves that nothing is written after the handshake.
+- The certificate is verified like the HTTP check does (Mozilla roots, shared verifier). One that does not
+  verify is **not** a failed handshake: the sample is an `error` with `tls_certificate_invalid` and the detail
+  still has everything (subject, issuer, validity, the names it is valid for, why it was not trusted), because
+  the reason is the whole point. A trusted one is `ok` with the time of connect plus handshake as its round trip.
+- The detail adds to what an HTTP check already reports: up to 24 names from the subject alternative name
+  extension (DNS names and addresses, 3000 bytes at most so a result fits the backend's sample size) and how many
+  certificates the server sent. Days left are not computed here: the node reports `not_after` and whoever reads
+  the result knows what day it is.
+- Same destination policy as every other kind (public addresses, allowed ports, no internal names), refused
+  before anything is sent; 7 runner tests with scripted handshakes and 8 tests against real sockets with a test CA
+  (trusted, address certificate, wrong name, expired, unknown issuer, 60 names, a server that is not TLS, a closed
+  port, silence). Example frames `task_tls.json` and `sample_tls.json`; `hello_all_kinds.json` brought up to date.
+- The node advertises `tls` in its hello. A backend that does not know it never asks for it (needs backend v0.5
+  or newer for tasks).
+
 ### 2026-11-07: traceroute in rounds, like mtr
 - A traceroute task with `count` above one (up to 10 rounds, `interval_ms` apart) repeats the trace.
   The first round is the trace as before (three probes to each hop, stops at the destination or after

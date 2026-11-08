@@ -6,6 +6,7 @@ use std::time::Duration;
 use super::dns::{self, DnsOutcome, DnsRequest};
 use super::http::{HttpClient, HttpOutcome, HttpRequest};
 use super::icmp::IcmpProber;
+use super::tls::{TlsOutcome, TlsRequest};
 use super::traceroute::{self, HopOutcome};
 use super::{ConnectOutcome, EchoOutcome, Prober, tcp};
 use crate::protocol::Capabilities;
@@ -29,6 +30,7 @@ impl SystemProber {
         let mut capabilities = self.icmp.capabilities();
         capabilities.kinds.push("tcp".into());
         capabilities.kinds.push("http".into());
+        capabilities.kinds.push("tls".into());
         capabilities.kinds.push("dns".into());
         if traceroute::available(false) || traceroute::available(true) {
             capabilities.kinds.push("traceroute".into());
@@ -71,5 +73,9 @@ impl Prober for SystemProber {
 
     async fn http_once(&self, request: HttpRequest) -> HttpOutcome {
         self.http.fetch(&request).await
+    }
+
+    async fn tls_once(&self, request: TlsRequest) -> TlsOutcome {
+        self.http.handshake(&request).await
     }
 }

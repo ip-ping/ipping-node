@@ -6,6 +6,7 @@ pub mod http;
 pub mod icmp;
 pub mod system;
 pub mod tcp;
+pub mod tls;
 pub mod traceroute;
 
 use std::future::Future;
@@ -78,6 +79,17 @@ pub trait Prober: Send + Sync + 'static {
     fn dns_query(&self, request: dns::DnsRequest) -> impl Future<Output = dns::DnsOutcome> + Send {
         let _ = request;
         async { dns::DnsOutcome::Failed(crate::protocol::error_code::UNSUPPORTED_KIND) }
+    }
+
+    /// Complete one TLS handshake with one address and read the certificate; no request is sent.
+    fn tls_once(&self, request: tls::TlsRequest) -> impl Future<Output = tls::TlsOutcome> + Send {
+        let _ = request;
+        async {
+            tls::TlsOutcome::failed(
+                crate::protocol::error_code::UNSUPPORTED_KIND,
+                "This node cannot check certificates.",
+            )
+        }
     }
 
     /// Make one HTTP request to one address: connect, optionally TLS, send a GET, read the

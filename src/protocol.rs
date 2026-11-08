@@ -159,6 +159,7 @@ pub enum TaskKind {
     Http,
     Traceroute,
     Dns,
+    Tls,
     /// A kind from a newer backend. The task is answered with `unsupported_kind`, not dropped.
     #[serde(other)]
     Unknown,
@@ -202,7 +203,8 @@ pub enum Scheme {
 /// Settings of a task. Which ones matter depends on the kind: ping and tcp use `count`,
 /// `interval_ms` and `timeout_ms`; http uses `scheme`, `path`, `timeout_ms` (for the whole request,
 /// redirects included) and `max_redirects`; traceroute uses `max_hops` and `timeout_ms` (per hop);
-/// dns uses `record_type`, `resolver_ip` and `timeout_ms`.
+/// dns uses `record_type`, `resolver_ip` and `timeout_ms`; tls uses `timeout_ms` (the target carries
+/// the address, the port and the `server_name` to present).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TaskOptions {
     #[serde(default = "default_count")]

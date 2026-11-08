@@ -10,6 +10,7 @@ use std::time::Duration;
 
 mod dns;
 mod http;
+mod tls;
 mod traceroute;
 
 use time::OffsetDateTime;
@@ -146,6 +147,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             TaskKind::Ping | TaskKind::Tcp => self.run_series(&task, &job, ip, &resolved).await,
             TaskKind::Http => self.run_http(&task, &job, ip, &resolved, dns).await,
             TaskKind::Traceroute => self.run_traceroute(&task, &job, ip, &resolved).await,
+            TaskKind::Tls => self.run_tls(&task, &job, ip, &resolved, dns).await,
             // Handled above, before any name is resolved; `check` has already refused the other.
             TaskKind::Dns | TaskKind::Unknown => {}
         }
@@ -159,6 +161,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             TaskKind::Http => "http",
             TaskKind::Traceroute => "traceroute",
             TaskKind::Dns => "dns",
+            TaskKind::Tls => "tls",
             TaskKind::Unknown => "",
         };
         if !self.capabilities.kinds.iter().any(|k| k == advertised) {
@@ -180,6 +183,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             TaskKind::Http => self.check_http(task),
             TaskKind::Traceroute => self.check_traceroute(task),
             TaskKind::Dns => self.dns_plan(task).map(|_| ()),
+            TaskKind::Tls => self.check_tls(task),
             TaskKind::Unknown => Err(Failure::new(
                 error_code::UNSUPPORTED_KIND,
                 "This node does not run that kind of measurement.",
