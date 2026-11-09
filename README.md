@@ -5,8 +5,8 @@ A node is a small Rust program: it connects *out* to the backend, receives typed
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
 connect, HTTP request, traceroute, DNS lookup, certificate check**) and reports structured results.
 
-Current release: **v0.5.1**. It works with any backend for ping; TCP, HTTP and traceroute need backend
-**v0.3.0** or newer, DNS checks need backend **v0.4.0**, and traceroute rounds and certificate checks need backend **v0.5.0**. Binaries are published for Linux `amd64` and `arm64` (built against
+Current release: **v0.6.0**. It works with any backend for ping; TCP, HTTP and traceroute need backend
+**v0.3.0** or newer, DNS checks need backend **v0.4.0**, traceroute rounds and certificate checks need backend **v0.5.0**, and DNS over HTTPS and QUIC need backend **v0.6.0**. Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
 | Repository | Role |
@@ -222,7 +222,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
-- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
+- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1, v0.6.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [x] Every kind over IPv6 with global addresses and the real policy, in a network-namespace lab (node CI); see the node README for what that does and does not prove
 - [ ] Over the real public IPv6 internet (needs a host with IPv6 connectivity; neither the development machine nor CI runners have it)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)

@@ -2,7 +2,10 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.6.0 (2026-11-09)
+
+DNS over HTTPS, a QUIC handshake for the certificate check, and a test of every kind over IPv6 with global addresses. Both new
+transports need backend v0.6.0 to be asked for; against an older backend the node keeps working as before.
 
 ### QUIC handshake (the transport of HTTP/3)
 - The certificate check can be a QUIC handshake (`transport: "quic"`): UDP to the port, offering `h3`, using `quinn` with the same
