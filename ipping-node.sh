@@ -180,6 +180,20 @@ run_soft() {
   return "$rc"
 }
 
+# fetch URL DEST: curl, tried up to four times. `curl --retry` alone does not retry a connection that dies
+# halfway ("unexpected EOF", exit 56) or a file that stops short (exit 18), which is what a flaky link, or a
+# machine that goes to sleep, does to a download; `--retry-all-errors` would, but curl older than 7.71 (Ubuntu
+# 20.04) does not know it. A single command on purpose, so `run` can show progress for it.
+fetch() {
+  local tries=0
+  while :; do
+    curl -fsSL --connect-timeout 20 "$1" -o "$2" && return 0
+    tries=$((tries + 1))
+    [ "$tries" -ge 4 ] && return 1
+    sleep $((tries * 3))
+  done
+}
+
 # run "what this does" command args...   as run_soft, but a failure ends the installer.
 run() {
   local what="$1"
@@ -336,7 +350,7 @@ resolve_version() {
     return
   fi
   local tag
-  tag="$(curl -fsSL "${API_BASE}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || true
+  tag="$(fetch "${API_BASE}/releases/latest" /dev/stdout | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || true
   [ -n "$tag" ] || die "Could not find a published release of ${REPO}. Pass --version vX.Y.Z (or --binary FILE)."
   echo "$tag"
 }
@@ -348,8 +362,8 @@ download_verified_binary() {
   arch="$(detect_arch)"
   asset="ipping-node-linux-${arch}"
   tmp="$(make_temp_dir)"
-  run "Downloading ipping-node ${tag} (${arch})" curl -fsSL "${RELEASE_BASE}/${tag}/${asset}" -o "${tmp}/${asset}"
-  curl -fsSL "${RELEASE_BASE}/${tag}/SHA256SUMS" -o "${tmp}/SHA256SUMS" || die "Could not download SHA256SUMS for ${tag}."
+  run "Downloading ipping-node ${tag} (${arch})" fetch "${RELEASE_BASE}/${tag}/${asset}" "${tmp}/${asset}"
+  fetch "${RELEASE_BASE}/${tag}/SHA256SUMS" "${tmp}/SHA256SUMS" || die "Could not download SHA256SUMS for ${tag}."
   expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS" | head -n 1)"
   [ -n "$expected" ] || die "SHA256SUMS has no entry for ${asset}."
   actual="$(sha256sum "${tmp}/${asset}" | awk '{ print $1 }')"
@@ -411,7 +425,7 @@ install_docker_if_missing() {
   step "Installing Docker"
   apt_install ca-certificates curl
   install -m 0755 -d /etc/apt/keyrings
-  run "Adding Docker's package signing key" curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
+  run "Adding Docker's package signing key" fetch "https://download.docker.com/linux/${distro}/gpg" /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb

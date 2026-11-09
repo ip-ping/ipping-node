@@ -2,6 +2,21 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## Unreleased
+
+### fix: a download that loses its connection halfway is tried again
+Found installing the released v0.5.0 on a Debian 13 container while the machine went to sleep: the TLS connection
+died in the middle of a download ("curl: (56) ... unexpected EOF") and the installer stopped with "Could not
+download".
+- `ipping-node.sh` fetched everything with plain `curl` (the node installer without any retry; the site installer with
+  `--retry 3`, which does not retry a connection that dies halfway). Every download now goes through `fetch`, which
+  tries up to four times (3, 6 and 9 seconds apart) and has a 20 second connect timeout. It is a few lines of shell
+  and not `--retry-all-errors`, because curl older than 7.71 (Ubuntu 20.04, which these installers support) does
+  not know that option.
+- Tested with a stand-in for curl that drops the connection (exit 56): fetched once when it works, fetched on the
+  third try after two drops, given up after four; a test also fails if any download bypasses `fetch`. ShellCheck
+  (stable and v0.10.0) is clean.
+
 ## v0.5.0 (2026-11-09)
 
 Traceroute in rounds like `mtr`, and certificate checks. Both need backend v0.5.0 to be given such tasks; against an

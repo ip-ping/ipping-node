@@ -130,4 +130,16 @@ out="$(bash "$SCRIPT" --no-such-flag 2>&1)"; rc=$?
 check "an unknown flag is refused" 1 "$rc"
 
 echo
+echo "downloads are tried again when the connection dies halfway"
+sleep() { :; }
+attempts=0
+curl() { attempts=$((attempts + 1)); [ "$attempts" -le "$FAIL_FIRST" ] && return 56; return 0; }
+FAIL_FIRST=0; attempts=0; fetch http://x /dev/null; check "a download that works is fetched once" "0 1" "$? $attempts"
+FAIL_FIRST=2; attempts=0; fetch http://x /dev/null; check "two dropped connections, then it works (curl exit 56 is retried)" "0 3" "$? $attempts"
+FAIL_FIRST=99; attempts=0; fetch http://x /dev/null; check "it gives up after four tries" "1 4" "$? $attempts"
+unset -f curl sleep
+# shellcheck disable=SC2016 # the pattern is literal text, not something to expand
+bad="$(grep -nE 'curl -fsSL' "$SCRIPT" | grep -v 'curl -fsSL --connect-timeout 20 "\$1" -o "\$2" && return 0' || true)"
+check "no download bypasses fetch" "" "$bad"
+
 if [ "$failures" -eq 0 ]; then echo "all passed"; else echo "$failures failed"; exit 1; fi
