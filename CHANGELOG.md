@@ -2,7 +2,10 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.5.0 (2026-11-09)
+
+Traceroute in rounds like `mtr`, and certificate checks. Both need backend v0.5.0 to be given such tasks; against an
+older backend the node keeps working as before (it traces once and is never asked for a certificate).
 
 ### 2026-11-08: certificate checks
 - A new kind, `tls`: connect to an address, complete the TLS handshake for a name (or for the address itself)
@@ -21,7 +24,7 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
   (trusted, address certificate, wrong name, expired, unknown issuer, 60 names, a server that is not TLS, a closed
   port, silence). Example frames `task_tls.json` and `sample_tls.json`; `hello_all_kinds.json` brought up to date.
 - The node advertises `tls` in its hello. A backend that does not know it never asks for it (tasks
-  need a backend newer than v0.4.1, the one with schema migration 0009).
+  need backend v0.5.0).
 
 ### 2026-11-07: traceroute in rounds, like mtr
 - A traceroute task with `count` above one (up to 10 rounds, `interval_ms` apart) repeats the trace.
@@ -38,7 +41,7 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 - 5 runner tests with scripted hops (replies and loss over rounds, spacing, cancelling, limits) and a
   second test through real routers in network namespaces for IPv4 and IPv6. Example frames in the
   fixtures: `task_traceroute_rounds.json` and `sample_hop_rounds.json`.
-- Needs a backend that sends `count` for a traceroute (the next one); against v0.4.x it keeps tracing once.
+- Needs backend v0.5.0 to be given `count` for a traceroute; against v0.4.x it keeps tracing once.
 
 ## v0.4.0 (2026-11-07)
 
