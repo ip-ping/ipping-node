@@ -4,6 +4,26 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### DNS over HTTPS
+- The DNS check can ask over HTTPS (`transport: "doh"`, with `resolver_ip`, `doh_host` and `doh_path` from the backend): the
+  same question the node already builds (id 0, as RFC 8484 recommends for GET), base64url in `?dns=`, an HTTPS GET to the
+  resolver's address on port 443 with the certificate checked against the Mozilla roots for `doh_host`. A certificate that
+  does not verify ends it before the question is sent. A new `HttpClient::get_body` reads a bounded response (a length, a
+  chunked body, or to the end; at most 16 KiB; anything else is refused), and the answer goes through the parser the
+  UDP path uses, so the sample is the same with `transport: "doh"` added.
+- The host must be a public name, the path plain path characters (no query), and port 443 must be allowed; a node's own
+  resolvers cannot be asked this way. All of it is checked before anything is sent.
+- **Quad9 does not work**, found by running it against the real resolvers: it answers `505 ... requires HTTP/2` to
+  HTTP/1.1, and an HTTP/2 client would be a large dependency for one resolver. The node reports a protocol error with a
+  message that says some resolvers require HTTP/2; the backend does not offer Quad9 over HTTPS. Cloudflare and Google
+  work (real answers for A and TXT, and NXDOMAIN for a missing name, in the ignored internet test).
+- Tests: parser (a length, chunked, extensions, cut short, too long, not HTTP, a 503), base64url against the RFC vectors,
+  runner planning and refusals (11 cases), and a real HTTPS server on loopback with a test CA (the request line, `Host` and
+  `Accept`; an error status, a wrong content type, garbage; an untrusted certificate and a certificate for another name,
+  both with nothing sent; silence; a closed port). `tests/doh_internet.rs` (ignored; `cargo test --test doh_internet
+  -- --ignored`) asks the real resolvers. Example frames `task_dns_doh.json` and `sample_dns_doh.json`.
+- Clippy now allows `large_enum_variant` on the backend frame enum, with a reason (a task grew by three options).
+
 ### test: every kind over IPv6 with global addresses, in a namespace lab
 - `tests/netns/ipv6.sh` builds a source, a router and a destination out of network namespaces with global IPv6
   addresses (an allocated range, so the node's real, production policy calls them public) and real servers: a web
