@@ -5,7 +5,7 @@ A node is a small Rust program: it connects *out* to the backend, receives typed
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
 connect, HTTP request, traceroute, DNS lookup, certificate check**) and reports structured results.
 
-Current release: **v0.5.0**. It works with any backend for ping; TCP, HTTP and traceroute need backend
+Current release: **v0.5.1**. It works with any backend for ping; TCP, HTTP and traceroute need backend
 **v0.3.0** or newer, DNS checks need backend **v0.4.0**, and traceroute rounds and certificate checks need backend **v0.5.0**. Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
@@ -213,7 +213,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
-- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
+- [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
 - [x] Certificate checks (a handshake with no request: what the certificate says and whether this node trusts it)

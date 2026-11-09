@@ -2,7 +2,9 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.5.1 (2026-11-09)
+
+The installer now tries a download again when its connection dies halfway. The node itself is unchanged from v0.5.0.
 
 ### fix: a download that loses its connection halfway is tried again
 Found installing the released v0.5.0 on a Debian 13 container while the machine went to sleep: the TLS connection
