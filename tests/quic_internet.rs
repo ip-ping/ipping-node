@@ -54,23 +54,24 @@ async fn a_server_without_http3_is_a_timeout_or_an_error() {
     assert!(!matches!(outcome, TlsOutcome::Handshake(ref f) if f.alpn.as_deref() != Some("h3")));
 }
 
-/// Not an assertion: how often each host answers, to tell a flaky path from a broken client.
+/// Not an assertion: how often each host answers and how long the handshake takes, to tell a flaky path from a broken
+/// client. `H` is a handshake with h3 (with its time), `t` a timeout.
 #[tokio::test]
 #[ignore = "needs the internet"]
 async fn how_often_each_host_answers() {
-    for host in [
-        "www.cloudflare.com",
-        "www.google.com",
-        "cloudflare-dns.com",
-        "dns.google",
-    ] {
+    for host in ["www.cloudflare.com", "example.com", "cloudflare-dns.com"] {
         let mut line = String::new();
         for _ in 0..4 {
-            line.push(match quic(host).await {
-                TlsOutcome::Handshake(found) if found.alpn.as_deref() == Some("h3") => 'H',
-                TlsOutcome::Handshake(_) => 'h',
-                TlsOutcome::Timeout => 't',
-                TlsOutcome::Failed { .. } => 'F',
+            let started = std::time::Instant::now();
+            let outcome = quic(host).await;
+            let took = started.elapsed().as_millis();
+            line.push_str(&match outcome {
+                TlsOutcome::Handshake(found) if found.alpn.as_deref() == Some("h3") => {
+                    format!("H({}ms, own {}ms) ", took, found.handshake.as_millis())
+                }
+                TlsOutcome::Handshake(_) => format!("h({took}ms) "),
+                TlsOutcome::Timeout => format!("t({took}ms) "),
+                TlsOutcome::Failed { .. } => format!("F({took}ms) "),
             });
         }
         println!("{host:<20} {line}");

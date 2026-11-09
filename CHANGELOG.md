@@ -2,6 +2,19 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## Unreleased
+
+### What the released v0.6.0 does against real QUIC servers
+- Checked with the released binary on a fresh Debian 13: `www.cloudflare.com` and `example.com` complete a QUIC handshake
+  offering `h3` and agree `h3` (trusted, TLS 1.3). `github.com` and `expired.badssl.com` do not serve HTTP/3 and come back
+  as a timeout, which is the right answer: a QUIC check says nothing about a server that does not listen for QUIC.
+- **The handshake took 5 to 7 seconds from the machine used for testing**, against 35 to 40 ms for TLS over TCP to the same
+  hosts. Not the client: an independent implementation (`aioquic`, run from the same machine) took 5.2 to 6.2 s for the same
+  handshakes, so it is that network's path for UDP (this machine goes through a VPN). The release asks for nothing more than
+  the 8 s of the check's default timeout, which this path was close to; a node on an ordinary connection answers in tens of
+  milliseconds. `tests/quic_internet.rs::how_often_each_host_answers` (ignored without the internet) now prints each attempt's time.
+- Google's own servers (`www.google.com`, `dns.google`) never answered a QUIC handshake from that network.
+
 ## v0.6.0 (2026-11-09)
 
 DNS over HTTPS, a QUIC handshake for the certificate check, and a test of every kind over IPv6 with global addresses. Both new
