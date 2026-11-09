@@ -24,6 +24,8 @@ copies of its example frames and the tests fail if this crate drifts from them.
 Download the installer from the newest release and run it (it asks for sudo itself, and shows a
 menu when given no arguments):
 
+(The command uses curl's `--retry-all-errors`, which needs curl 7.71 or newer: drop it on the now end-of-life Ubuntu 20.04.)
+
 ```bash
 curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/ip-ping/ipping-node/releases/latest/download/ipping-node.sh -o ipping-node.sh && chmod +x ipping-node.sh && bash ipping-node.sh
 ```
