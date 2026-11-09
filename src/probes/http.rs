@@ -171,6 +171,102 @@ pub fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// One HTTPS GET whose body is wanted (DNS over HTTPS): to one address, with the name presented to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyRequest {
+    pub ip: IpAddr,
+    pub port: u16,
+    /// The server name presented (SNI), checked against the certificate and sent as the `Host`.
+    pub server_name: String,
+    /// Path and query.
+    pub target: String,
+    pub accept: &'static str,
+    /// The most body bytes read; a longer one is refused.
+    pub max_body: usize,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyOutcome {
+    Response(BodyResponse),
+    Failed { code: &'static str, message: String },
+    Timeout,
+}
+
+/// Read a whole HTTP/1.1 response that was asked for with `Connection: close`: the status, the content type and the body
+/// (cut at `Content-Length`, or decoded if chunked, or to the end of the stream if neither). Anything longer than
+/// `max_body`, or that is not HTTP, is refused.
+pub fn parse_body_response(bytes: &[u8], max_body: usize) -> Result<BodyResponse, &'static str> {
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut response = httparse::Response::new(&mut headers);
+    let Ok(httparse::Status::Complete(head_len)) = response.parse(bytes) else {
+        return Err(error_code::PROTOCOL_ERROR);
+    };
+    let status = response.code.ok_or(error_code::PROTOCOL_ERROR)?;
+    let header = |name: &str| {
+        response
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .and_then(|h| std::str::from_utf8(h.value).ok())
+            .map(|v| v.trim().to_owned())
+    };
+    let content_type = header("content-type").map(|v| clean(v.as_bytes(), 100));
+    let rest = &bytes[head_len..];
+    let body = if header("transfer-encoding")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"))
+    {
+        decode_chunked(rest, max_body)?
+    } else if let Some(length) = header("content-length") {
+        let length: usize = length.parse().map_err(|_| error_code::PROTOCOL_ERROR)?;
+        if length > max_body || rest.len() < length {
+            return Err(error_code::PROTOCOL_ERROR);
+        }
+        rest[..length].to_vec()
+    } else {
+        if rest.len() > max_body {
+            return Err(error_code::PROTOCOL_ERROR);
+        }
+        rest.to_vec()
+    };
+    Ok(BodyResponse {
+        status,
+        content_type,
+        body,
+    })
+}
+
+fn decode_chunked(mut rest: &[u8], max_body: usize) -> Result<Vec<u8>, &'static str> {
+    let mut body = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or(error_code::PROTOCOL_ERROR)?;
+        let size_text =
+            std::str::from_utf8(&rest[..line_end]).map_err(|_| error_code::PROTOCOL_ERROR)?;
+        let size_text = size_text.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| error_code::PROTOCOL_ERROR)?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Ok(body);
+        }
+        if body.len() + size > max_body || rest.len() < size + 2 || &rest[size..size + 2] != b"\r\n"
+        {
+            return Err(error_code::PROTOCOL_ERROR);
+        }
+        body.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+}
+
 /// Verifies like the normal web verifier, but never fails the handshake: it remembers why it
 /// would have, so the certificate can be reported before the connection is dropped.
 #[derive(Debug)]
@@ -362,6 +458,102 @@ impl HttpClient {
             names,
             chain,
         })
+    }
+
+    /// One HTTPS GET, read in full (bounded). A certificate that does not verify ends it before anything is sent.
+    pub async fn get_body(&self, request: &BodyRequest) -> BodyOutcome {
+        let deadline = Instant::now() + request.timeout;
+        let started = Instant::now();
+        let failed = |code: &'static str, message: &str| BodyOutcome::Failed {
+            code,
+            message: message.to_owned(),
+        };
+        let stream = match timeout_at(
+            deadline,
+            TcpStream::connect(SocketAddr::new(request.ip, request.port)),
+        )
+        .await
+        {
+            Err(_) => return BodyOutcome::Timeout,
+            Ok(Err(error)) => {
+                return match classify(&error, started.elapsed()) {
+                    ConnectOutcome::Refused(_) => failed(
+                        error_code::CONNECTION_REFUSED,
+                        "Nothing accepts connections on that port.",
+                    ),
+                    ConnectOutcome::Timeout => BodyOutcome::Timeout,
+                    ConnectOutcome::Failed(code) => failed(code, "Could not connect."),
+                    ConnectOutcome::Connected(_) => unreachable!("classify is for errors"),
+                };
+            }
+            Ok(Ok(stream)) => stream,
+        };
+        let _ = stream.set_nodelay(true);
+        let Ok(server_name) = ServerName::try_from(request.server_name.clone()) else {
+            return failed(
+                error_code::TLS_ERROR,
+                "The server name is not valid for TLS.",
+            );
+        };
+        let verdict = Arc::new(Mutex::new(None));
+        let connector = TlsConnector::from(Arc::new(
+            self.client_config(verdict.clone(), vec![b"http/1.1".to_vec()]),
+        ));
+        let mut tls = match timeout_at(deadline, connector.connect(server_name, stream)).await {
+            Err(_) => return BodyOutcome::Timeout,
+            Ok(Err(error)) => {
+                return failed(
+                    error_code::TLS_ERROR,
+                    &format!(
+                        "The TLS handshake failed: {}",
+                        clean(error.to_string().as_bytes(), 160)
+                    ),
+                );
+            }
+            Ok(Ok(tls)) => tls,
+        };
+        if let Some(reason) = verdict.lock().expect("verifier lock").clone() {
+            return failed(error_code::TLS_CERTIFICATE_INVALID, &reason);
+        }
+        let text = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\nAccept: {}\r\nConnection: close\r\n\r\n",
+            request.target, request.server_name, request.accept
+        );
+        match timeout_at(deadline, async {
+            tls.write_all(text.as_bytes()).await?;
+            tls.flush().await
+        })
+        .await
+        {
+            Err(_) => return BodyOutcome::Timeout,
+            Ok(Err(_)) => {
+                return failed(
+                    error_code::CONNECTION_RESET,
+                    "The connection closed while sending the request.",
+                );
+            }
+            Ok(Ok(())) => {}
+        }
+        let cap = MAX_HEAD_BYTES + request.max_body + 1024;
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match timeout_at(deadline, tls.read(&mut chunk)).await {
+                Err(_) => return BodyOutcome::Timeout,
+                // A close without a TLS close_notify still ends the body when the length says it is complete.
+                Ok(Ok(0) | Err(_)) => break,
+                Ok(Ok(n)) => {
+                    buffer.extend_from_slice(&chunk[..n]);
+                    if buffer.len() > cap {
+                        return failed(error_code::PROTOCOL_ERROR, "The response is too long.");
+                    }
+                }
+            }
+        }
+        match parse_body_response(&buffer, request.max_body) {
+            Ok(response) => BodyOutcome::Response(response),
+            Err(code) => failed(code, "The server did not send a readable response."),
+        }
     }
 
     pub async fn fetch(&self, request: &HttpRequest) -> HttpOutcome {
@@ -648,5 +840,87 @@ async fn read_head<S: AsyncRead + Unpin>(
             Ok(Err(_)) | Ok(Ok(0)) => return Err(HeadError::Closed),
             Ok(Ok(n)) => buffer.extend_from_slice(&chunk[..n]),
         }
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+
+    fn head(extra: &str) -> Vec<u8> {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\n{extra}\r\n")
+            .into_bytes()
+    }
+
+    #[test]
+    fn a_body_with_a_length_is_cut_to_it() {
+        let mut bytes = head("Content-Length: 5\r\n");
+        bytes.extend_from_slice(b"hello and then some");
+        let r = parse_body_response(&bytes, 100).unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (200, &b"hello"[..]));
+        assert_eq!(r.content_type.as_deref(), Some("application/dns-message"));
+    }
+
+    #[test]
+    fn a_chunked_body_is_put_together_and_extensions_are_ignored() {
+        let mut bytes = head("Transfer-Encoding: chunked\r\n");
+        bytes.extend_from_slice(b"3;ext=1\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n");
+        assert_eq!(parse_body_response(&bytes, 100).unwrap().body, b"abcdefg");
+    }
+
+    #[test]
+    fn a_body_without_a_length_runs_to_the_end() {
+        let mut bytes = head("");
+        bytes.extend_from_slice(b"until the end");
+        assert_eq!(
+            parse_body_response(&bytes, 100).unwrap().body,
+            b"until the end"
+        );
+    }
+
+    #[test]
+    fn what_is_cut_short_too_long_or_not_http_is_refused() {
+        let mut short = head("Content-Length: 50\r\n");
+        short.extend_from_slice(b"only a little");
+        assert!(
+            parse_body_response(&short, 100).is_err(),
+            "fewer bytes than promised"
+        );
+
+        let mut long = head("Content-Length: 50\r\n");
+        long.extend_from_slice(&[0u8; 50]);
+        assert!(
+            parse_body_response(&long, 10).is_err(),
+            "longer than allowed"
+        );
+
+        let mut chunked = head("Transfer-Encoding: chunked\r\n");
+        chunked.extend_from_slice(b"20\r\nthis chunk is longer than the limit\r\n0\r\n\r\n");
+        assert!(
+            parse_body_response(&chunked, 8).is_err(),
+            "a chunk over the limit"
+        );
+        let mut broken = head("Transfer-Encoding: chunked\r\n");
+        broken.extend_from_slice(b"zz\r\nabc\r\n");
+        assert!(
+            parse_body_response(&broken, 100).is_err(),
+            "a chunk size that is not hex"
+        );
+
+        assert!(
+            parse_body_response(b"SSH-2.0-OpenSSH_9.6\r\n", 100).is_err(),
+            "not HTTP"
+        );
+        assert!(
+            parse_body_response(b"HTTP/1.1 200 OK\r\nContent-Le", 100).is_err(),
+            "a head that never ends"
+        );
+    }
+
+    #[test]
+    fn a_status_other_than_200_is_reported_not_hidden() {
+        let bytes = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+        let r = parse_body_response(bytes, 100).unwrap();
+        assert_eq!((r.status, r.body.len(), r.content_type), (503, 0, None));
     }
 }

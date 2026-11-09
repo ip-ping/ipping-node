@@ -14,6 +14,7 @@ use super::{Failure, Job, Runner, TIMEOUT_MS, micros};
 use crate::policy::{is_public, validate_hostname};
 use crate::probes::Prober;
 use crate::probes::dns::{DnsAnswer, DnsOutcome, DnsRequest, RecordType, Resolver};
+use crate::probes::doh::DohTarget;
 use crate::protocol::{SampleStatus, Task, error_code};
 use crate::resolve::Resolve;
 
@@ -31,6 +32,9 @@ pub struct DnsDetail {
     pub rcode: String,
     pub authoritative: bool,
     pub via_tcp: bool,
+    /// `doh` when the question went over HTTPS; left out for plain DNS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<&'static str>,
     pub truncated: bool,
     pub answers: Vec<AnswerDetail>,
     /// Answers left out because they were private addresses from this node's own resolver.
@@ -52,6 +56,17 @@ pub(super) struct DnsPlan {
     record_type: RecordType,
     resolver: Resolver,
     timeout: Duration,
+    /// Ask over HTTPS (port 443) instead of UDP.
+    doh: Option<DohTarget>,
+}
+
+/// A DoH endpoint path the node will put on the wire: visible ASCII path characters, no query (the node adds its own).
+fn valid_doh_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() <= 64
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'.' | b'-'))
 }
 
 fn out_of_limits() -> Failure {
@@ -90,11 +105,36 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
                     .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?,
             ),
         };
+        let doh = match options.transport.as_deref() {
+            None | Some("udp") => None,
+            Some("doh") => {
+                // DNS over HTTPS is asked of a named public resolver, never of this node's own ones.
+                if !matches!(resolver, Resolver::Server(_)) {
+                    return Err(out_of_limits());
+                }
+                let host = options.doh_host.as_deref().ok_or_else(out_of_limits)?;
+                let host = validate_hostname(host)
+                    .map_err(|e| Failure::new(error_code::BLOCKED_BY_POLICY, e.to_string()))?;
+                let path = options.doh_path.as_deref().ok_or_else(out_of_limits)?;
+                if !valid_doh_path(path) {
+                    return Err(out_of_limits());
+                }
+                self.policy
+                    .check_port(443)
+                    .map_err(|e| Failure::new(error_code::PORT_NOT_ALLOWED, e.to_string()))?;
+                Some(DohTarget {
+                    host,
+                    path: path.to_owned(),
+                })
+            }
+            Some(_) => return Err(out_of_limits()),
+        };
         Ok(DnsPlan {
             name,
             record_type,
             resolver,
             timeout: Duration::from_millis(options.timeout_ms),
+            doh,
         })
     }
 
@@ -111,6 +151,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             record_type: plan.record_type,
             resolver: plan.resolver,
             timeout: plan.timeout,
+            doh: plan.doh.clone(),
         };
         let outcome = tokio::select! {
             () = job.cancel.cancelled() => return,
@@ -152,6 +193,10 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             }
             DnsOutcome::Failed(code) => {
                 let message = match code {
+                    // Some resolvers (Quad9) answer DNS over HTTPS only over HTTP/2, which this node does not speak.
+                    error_code::PROTOCOL_ERROR if plan.doh.is_some() => {
+                        "The resolver did not answer the HTTPS query. Some resolvers require HTTP/2, which this node does not speak."
+                    }
                     error_code::DNS_FAILURE => "This node has no resolver configured.",
                     error_code::CONNECTION_REFUSED => "The resolver refused the connection.",
                     error_code::UNSUPPORTED_FAMILY => "This node cannot reach that resolver.",
@@ -197,6 +242,7 @@ fn describe(plan: &DnsPlan, answer: DnsAnswer) -> (DnsDetail, Vec<IpAddr>) {
         rcode: answer.rcode_name(),
         authoritative: answer.authoritative,
         via_tcp: answer.via_tcp,
+        transport: plan.doh.as_ref().map(|_| "doh"),
         truncated: answer.truncated,
         answers,
         redacted,

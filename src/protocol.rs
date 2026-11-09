@@ -61,6 +61,9 @@ pub enum ClientFrame {
 /// Frames sent by the backend.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// A frame is parsed once per message received, so the size of the largest variant (a task) does not matter,
+// and boxing it would touch every place a task is matched.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerFrame {
     Welcome(Welcome),
     Task(Task),
@@ -203,7 +206,7 @@ pub enum Scheme {
 /// Settings of a task. Which ones matter depends on the kind: ping and tcp use `count`,
 /// `interval_ms` and `timeout_ms`; http uses `scheme`, `path`, `timeout_ms` (for the whole request,
 /// redirects included) and `max_redirects`; traceroute uses `max_hops` and `timeout_ms` (per hop);
-/// dns uses `record_type`, `resolver_ip` and `timeout_ms`; tls uses `timeout_ms` (the target carries
+/// dns uses `record_type`, `resolver_ip`, `timeout_ms` and, for DNS over HTTPS, `transport`, `doh_host` and `doh_path`; tls uses `timeout_ms` (the target carries
 /// the address, the port and the `server_name` to present).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TaskOptions {
@@ -226,6 +229,15 @@ pub struct TaskOptions {
     /// dns: ask this public resolver (port 53). Absent means the node's own resolvers.
     #[serde(default)]
     pub resolver_ip: Option<String>,
+    /// dns: `udp` (the default) or `doh`, DNS over HTTPS to `resolver_ip` on port 443.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// dns over HTTPS: the name the resolver's certificate is for.
+    #[serde(default)]
+    pub doh_host: Option<String>,
+    /// dns over HTTPS: the path of its query endpoint, such as `/dns-query`.
+    #[serde(default)]
+    pub doh_path: Option<String>,
 }
 
 fn default_count() -> u32 {
@@ -248,6 +260,9 @@ impl Default for TaskOptions {
             max_hops: None,
             record_type: None,
             resolver_ip: None,
+            transport: None,
+            doh_host: None,
+            doh_path: None,
         }
     }
 }

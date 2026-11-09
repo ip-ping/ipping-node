@@ -2,6 +2,7 @@
 //! way to ask for a custom packet size, flood mode or a sweep.
 
 pub mod dns;
+pub mod doh;
 pub mod http;
 pub mod icmp;
 pub mod system;

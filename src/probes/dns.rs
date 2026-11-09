@@ -99,6 +99,8 @@ pub struct DnsRequest {
     pub record_type: RecordType,
     pub resolver: Resolver,
     pub timeout: Duration,
+    /// Ask over HTTPS (DNS over HTTPS) instead of UDP: the resolver is `Resolver::Server(ip)`, on port 443.
+    pub doh: Option<super::doh::DohTarget>,
 }
 
 /// One record of an answer.
@@ -374,6 +376,21 @@ async fn tcp_exchange(
 
 /// The question, with an EDNS0 OPT record so a resolver may answer in more than 512 bytes.
 /// `None` if the name cannot be encoded.
+/// Base64 with the URL-safe alphabet and no padding (RFC 4648 section 5), as DNS over HTTPS wants it.
+pub fn base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..=chunk.len() {
+            out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+        }
+    }
+    out
+}
+
 pub fn encode_query(id: u16, name: &str, record_type: RecordType) -> Option<Vec<u8>> {
     let mut message = Vec::with_capacity(64);
     message.extend_from_slice(&id.to_be_bytes());
@@ -873,5 +890,27 @@ mod tests {
         }
         assert!(RecordType::parse("ANY").is_none());
         assert!(RecordType::parse("AXFR").is_none());
+    }
+}
+
+#[cfg(test)]
+mod base64url_tests {
+    use super::base64url;
+
+    #[test]
+    fn it_matches_the_rfc_4648_vectors_without_padding() {
+        for (input, expected) in [
+            (&b""[..], ""),
+            (b"f", "Zg"),
+            (b"fo", "Zm8"),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg"),
+            (b"fooba", "Zm9vYmE"),
+            (b"foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64url(input), expected);
+        }
+        // the two characters that differ from standard base64
+        assert_eq!(base64url(&[0xfb, 0xff, 0xbf]), "-_-_");
     }
 }

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ipping_node::policy::Policy;
 use ipping_node::probes::dns::{DnsAnswer, DnsOutcome, DnsRequest, Record, RecordType, Resolver};
+use ipping_node::probes::doh::DohTarget;
 use ipping_node::probes::{EchoOutcome, Prober};
 use ipping_node::protocol::{
     Capabilities, ClientFrame, ResultStatus, SampleStatus, ServerFrame, Task, error_code,
@@ -375,4 +376,132 @@ async fn an_answer_too_big_for_a_sample_is_cut_and_says_so() {
         *"000",
         "the first ones are kept"
     );
+}
+
+fn doh(resolver_ip: Option<&str>, extra: Value) -> Task {
+    let mut options = json!({
+        "timeout_ms": 3000, "record_type": "A", "transport": "doh",
+        "doh_host": "cloudflare-dns.com", "doh_path": "/dns-query",
+    });
+    if let Some(ip) = resolver_ip {
+        options["resolver_ip"] = json!(ip);
+    }
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        options[key] = value.clone();
+    }
+    dns_task(json!({"hostname": "example.com"}), options)
+}
+
+#[tokio::test]
+async fn dns_over_https_is_asked_of_a_named_resolver_and_the_sample_says_so() {
+    let prober = ScriptedDns::new(answer(vec![record(
+        RecordType::A,
+        "93.184.216.34",
+        Some("93.184.216.34"),
+    )]));
+    let frames = run(prober.clone(), &["dns"], doh(Some("1.1.1.1"), json!({}))).await;
+    {
+        let asked = prober.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].resolver,
+            Resolver::Server("1.1.1.1".parse().unwrap())
+        );
+        assert_eq!(
+            asked[0].doh,
+            Some(DohTarget {
+                host: "cloudflare-dns.com".into(),
+                path: "/dns-query".into()
+            })
+        );
+    }
+    let (status, _, detail) = sample(&frames);
+    assert_eq!(status, SampleStatus::Ok);
+    let detail = detail.unwrap();
+    assert_eq!(detail["transport"], "doh");
+    assert_eq!(detail["resolver"], "1.1.1.1");
+    assert_eq!(detail["answers"][0]["data"], "93.184.216.34");
+
+    // plain DNS says nothing about a transport, and is not asked over HTTPS
+    let udp = ScriptedDns::new(answer(vec![record(
+        RecordType::A,
+        "93.184.216.34",
+        Some("93.184.216.34"),
+    )]));
+    let frames = run(udp.clone(), &["dns"], simple(Some("1.1.1.1"))).await;
+    assert!(udp.asked.lock().unwrap()[0].doh.is_none());
+    assert!(sample(&frames).2.unwrap().get("transport").is_none());
+}
+
+#[tokio::test]
+async fn dns_over_https_that_makes_no_sense_or_could_reach_somewhere_wrong_is_refused_first() {
+    let cases: Vec<(&str, Task, &str)> = vec![
+        (
+            "the node's own resolvers cannot be asked over HTTPS",
+            doh(None, json!({})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a resolver that is not public",
+            doh(Some("10.0.0.1"), json!({})),
+            error_code::BLOCKED_BY_POLICY,
+        ),
+        (
+            "no certificate name",
+            doh(Some("1.1.1.1"), json!({"doh_host": null})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "an internal certificate name",
+            doh(Some("1.1.1.1"), json!({"doh_host": "dns.lan"})),
+            error_code::BLOCKED_BY_POLICY,
+        ),
+        (
+            "an address as the certificate name",
+            doh(Some("1.1.1.1"), json!({"doh_host": "1.1.1.1"})),
+            error_code::BLOCKED_BY_POLICY,
+        ),
+        (
+            "no path",
+            doh(Some("1.1.1.1"), json!({"doh_path": null})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a path with a query",
+            doh(Some("1.1.1.1"), json!({"doh_path": "/dns-query?x=1"})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a path with a space",
+            doh(Some("1.1.1.1"), json!({"doh_path": "/dns query"})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a path that is not absolute",
+            doh(Some("1.1.1.1"), json!({"doh_path": "dns-query"})),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a path that is too long",
+            doh(
+                Some("1.1.1.1"),
+                json!({"doh_path": format!("/{}", "a".repeat(80))}),
+            ),
+            error_code::INTERNAL_ERROR,
+        ),
+        (
+            "a transport nobody knows",
+            doh(Some("1.1.1.1"), json!({"transport": "dot"})),
+            error_code::INTERNAL_ERROR,
+        ),
+    ];
+    for (what, task, code) in cases {
+        let prober = ScriptedDns::new(answer(vec![]));
+        let frames = run(prober.clone(), &["dns"], task).await;
+        assert_eq!(failed_with(&frames), code, "{what}");
+        assert!(
+            prober.asked.lock().unwrap().is_empty(),
+            "{what}: nothing may be asked"
+        );
+    }
 }

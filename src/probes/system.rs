@@ -68,7 +68,21 @@ impl Prober for SystemProber {
     }
 
     async fn dns_query(&self, request: DnsRequest) -> DnsOutcome {
-        dns::lookup(&request).await
+        match (&request.doh, request.resolver) {
+            (Some(target), dns::Resolver::Server(ip)) => {
+                super::doh::query(
+                    &self.http,
+                    ip,
+                    443,
+                    target,
+                    &request.name,
+                    request.record_type,
+                    request.timeout,
+                )
+                .await
+            }
+            _ => dns::lookup(&request).await,
+        }
     }
 
     async fn http_once(&self, request: HttpRequest) -> HttpOutcome {
