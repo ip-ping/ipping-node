@@ -2,6 +2,20 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## Unreleased
+
+### test: every kind over IPv6 with global addresses, in a namespace lab
+- `tests/netns/ipv6.sh` builds a source, a router and a destination out of network namespaces with global IPv6
+  addresses (an allocated range, so the node's real, production policy calls them public) and real servers: a web
+  server, `openssl s_server` with a certificate nobody trusts, and a resolver that answers A and AAAA. The Rust
+  test `tests/ipv6_live.rs` runs the node's real prober over it. It needs no IPv6 internet and sends nothing out.
+- 6 tests, all passing on the first run, in CI as a new job: ping and TCP (a closed port is a refusal that keeps its
+  time), HTTP to an address (the `Host` header is bracketed), a certificate over IPv6 (self-signed: reported
+  with its reason and names), DNS A and AAAA from a resolver named by IPv6 address, a traceroute in rounds that
+  reports the router's global address as a router (not "private") and reaches the destination, and the policy refusing
+  ULA, documentation, link-local, loopback, IPv4-mapped and NAT64-mapped private addresses before anything is sent.
+- What this is not: the real IPv6 internet. The roadmap item stays open for that, reworded.
+
 ## v0.5.1 (2026-11-09)
 
 The installer now tries a download again when its connection dies halfway. The node itself is unchanged from v0.5.0.

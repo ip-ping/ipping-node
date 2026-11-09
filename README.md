@@ -120,9 +120,16 @@ has to be added here. HTTP is a small HTTP/1.1 client written for measuring: it 
 TLS and first byte separately, verifies certificates against the Mozilla roots, and reports the
 certificate's issuer, subject and validity.
 
-IPv6 works like IPv4 (same policy, same code paths) when the node has a route for it. It was tested
-over the IPv6 loopback and, for traceroute, through real routers in network namespaces; a route to
-the public IPv6 internet has not been tested.
+IPv6 works like IPv4 (same policy, same code paths) when the node has a route for it. It is tested in two
+ways: over the IPv6 loopback, and in a lab of network namespaces (`tests/netns/ipv6.sh`, run in CI) where
+a source, a router and a destination use *global* IPv6 addresses from an allocated range, so the node's real
+policy treats them as public. In that lab every kind runs against real servers (ping, TCP including a
+refusal, HTTP with a bracketed `Host`, a TLS handshake that reports an untrusted certificate with its
+reason, DNS A and AAAA from a resolver named by IPv6 address, a traceroute that reports the router's global
+address) and the policy refuses ULA, documentation, link-local, loopback, IPv4-mapped and NAT64-mapped
+private addresses. What it does not prove: the namespaces are isolated, so there are no real routers, real
+resolvers or real certificates, and a route to the public IPv6 internet has not been tested (neither the
+development machine nor CI runners have one).
 
 ## Docker
 
@@ -214,7 +221,8 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
 - [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
-- [ ] Public IPv6 verified end to end (needs a test host with IPv6 internet)
+- [x] Every kind over IPv6 with global addresses and the real policy, in a network-namespace lab (node CI); see the node README for what that does and does not prove
+- [ ] Over the real public IPv6 internet (needs a host with IPv6 connectivity; neither the development machine nor CI runners have it)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
 - [x] Certificate checks (a handshake with no request: what the certificate says and whether this node trusts it)
 - [x] Repeated traceroute rounds, like `mtr` (loss and spread per hop; tested through real routers in network namespaces)
