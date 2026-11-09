@@ -10,9 +10,9 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
   as a timeout, which is the right answer: a QUIC check says nothing about a server that does not listen for QUIC.
 - **The handshake took 5 to 7 seconds from the machine used for testing**, against 35 to 40 ms for TLS over TCP to the same
   hosts. Not the client: an independent implementation (`aioquic`, run from the same machine) took 5.2 to 6.2 s for the same
-  handshakes, so it is that network's path for UDP (this machine goes through a VPN). The release asks for nothing more than
-  the 8 s of the check's default timeout, which this path was close to; a node on an ordinary connection answers in tens of
-  milliseconds. `tests/quic_internet.rs::how_often_each_host_answers` (ignored without the internet) now prints each attempt's time.
+  handshakes, so it is something on that network's path for UDP (not found where). The check's default timeout is 8 s, which this path
+  came close to; expect a node on an ordinary connection to answer in well under a second, and a node behind a path like
+  this one to show up as slow or timing out for QUIC only. `tests/quic_internet.rs::how_often_each_host_answers` (ignored without the internet) now prints each attempt's time.
 - Google's own servers (`www.google.com`, `dns.google`) never answered a QUIC handshake from that network.
 
 ## v0.6.0 (2026-11-09)
