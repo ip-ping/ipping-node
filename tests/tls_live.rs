@@ -143,6 +143,7 @@ fn request(port: u16, server_name: &str) -> TlsRequest {
         port,
         server_name: server_name.into(),
         timeout: Duration::from_secs(5),
+        quic: false,
     }
 }
 

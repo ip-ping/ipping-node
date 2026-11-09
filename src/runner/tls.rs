@@ -36,11 +36,21 @@ pub struct TlsDetail {
     /// How many certificates the server sent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<u32>,
+    /// `quic` when the handshake was QUIC; left out for TLS over TCP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<&'static str>,
+    /// The application protocol agreed (`h3` over QUIC).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<String>,
 }
 
 impl<P: Prober, R: Resolve> Runner<P, R> {
     pub(super) fn check_tls(&self, task: &Task) -> Result<(), Failure> {
-        if !super::TIMEOUT_MS.contains(&task.options.timeout_ms) {
+        if !matches!(
+            task.options.transport.as_deref(),
+            None | Some("tcp" | "quic")
+        ) || !super::TIMEOUT_MS.contains(&task.options.timeout_ms)
+        {
             return Err(Failure::new(
                 error_code::INTERNAL_ERROR,
                 "Task options are outside this node's limits.",
@@ -74,7 +84,9 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             port,
             server_name: server_name.clone(),
             timeout: Duration::from_millis(task.options.timeout_ms),
+            quic: task.options.transport.as_deref() == Some("quic"),
         };
+        let quic = request.quic;
         let outcome = tokio::select! {
             () = job.cancel.cancelled() => return,
             outcome = self.prober.tls_once(request) => outcome,
@@ -88,6 +100,8 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             tls: None,
             names: vec![],
             chain: None,
+            transport: quic.then_some("quic"),
+            alpn: None,
         };
         let (status, code, rtt_us) = match outcome {
             TlsOutcome::Timeout => (SampleStatus::Timeout, None, None),
@@ -100,6 +114,7 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
                 detail.tls_us = Some(micros(found.handshake));
                 detail.chain = u32::try_from(found.chain).ok();
                 detail.names = found.names;
+                detail.alpn = found.alpn;
                 let trusted = found.info.verified;
                 detail.tls = Some(found.info);
                 if trusted {

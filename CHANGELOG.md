@@ -4,6 +4,20 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### QUIC handshake (the transport of HTTP/3)
+- The certificate check can be a QUIC handshake (`transport: "quic"`): UDP to the port, offering `h3`, using `quinn` with the same
+  certificate verifier the other checks use, so an untrusted or wrong-name certificate still completes the handshake and is
+  reported with its reason. The sample adds `transport: "quic"` and `alpn` (the protocol agreed, `h3`); the version is
+  TLSv1.3 (QUIC requires it) and the cipher suite is not exposed. A server that is not listening on UDP is silence and ends as a
+  timeout; one that does not offer `h3` ends with an error that says the QUIC handshake failed.
+- Tests: a real QUIC server on loopback with a test CA (trusted: the certificate, its names, the chain and `h3`; untrusted and
+  wrong-name: described with the reason; a server offering only `h2`; a UDP port that never answers), runner tests (the flag and
+  the detail, and the transports that are refused), run on macOS and Linux. `tests/quic_internet.rs` (ignored) handshakes with the
+  real Cloudflare 4 times of 4. **Google's QUIC endpoints never answered from the development network, nor for an independent client
+  (aioquic)**, so that is the network, not this client; the internet test asserts only Cloudflare.
+- `quinn` 0.11 with the ring backend is a new dependency; it builds with the TLS stack already used. Example frames
+  `task_tls_quic.json` and `sample_tls_quic.json`.
+
 ### DNS over HTTPS
 - The DNS check can ask over HTTPS (`transport: "doh"`, with `resolver_ip`, `doh_host` and `doh_path` from the backend): the
   same question the node already builds (id 0, as RFC 8484 recommends for GET), base64url in `?dns=`, an HTTPS GET to the

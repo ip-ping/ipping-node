@@ -90,6 +90,10 @@ impl Prober for SystemProber {
     }
 
     async fn tls_once(&self, request: TlsRequest) -> TlsOutcome {
-        self.http.handshake(&request).await
+        if request.quic {
+            self.http.quic_handshake(&request).await
+        } else {
+            self.http.handshake(&request).await
+        }
     }
 }

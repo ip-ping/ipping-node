@@ -91,15 +91,23 @@ fn finding(verified: bool, error: Option<&str>) -> TlsOutcome {
         info: info(verified, error),
         names: vec!["example.com".into(), "www.example.com".into()],
         chain: 2,
+        alpn: None,
     })
 }
 
 fn task(target: Value, timeout_ms: u64) -> Task {
+    task_with(
+        target,
+        json!({"count": 1, "interval_ms": 1000, "timeout_ms": timeout_ms}),
+    )
+}
+
+fn task_with(target: Value, options: Value) -> Task {
     let expires = time::OffsetDateTime::now_utc() + time::Duration::seconds(30);
     let frame = json!({
         "type": "task", "task_id": "t1", "attempt_id": "a1", "kind": "tls",
         "target": target,
-        "options": {"count": 1, "interval_ms": 1000, "timeout_ms": timeout_ms},
+        "options": options,
         "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap(),
     });
     match serde_json::from_value(frame).unwrap() {
@@ -326,6 +334,59 @@ async fn refusals_happen_before_anything_is_sent() {
     .await;
     assert_eq!(result_of(&frames).0, ResultStatus::Failed);
     assert!(prober.requests().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quic_handshake_is_asked_for_and_the_sample_says_so() {
+    let quic = TlsOutcome::Handshake(Finding {
+        connect: Duration::ZERO,
+        handshake: Duration::from_millis(31),
+        info: info(true, None),
+        names: vec!["example.com".into()],
+        chain: 2,
+        alpn: Some("h3".into()),
+    });
+    let prober = Scripted::new(quic);
+    let mut options = json!({"timeout_ms": 8000, "transport": "quic"});
+    options["count"] = json!(1);
+    let frames = run(
+        prober.clone(),
+        task_with(
+            json!({"ip": "93.184.216.34", "port": 443, "server_name": "example.com"}),
+            options,
+        ),
+    )
+    .await;
+    let sample = sample_of(&frames);
+    assert_eq!(sample.status, SampleStatus::Ok);
+    assert_eq!(sample.detail["transport"], "quic");
+    assert_eq!(sample.detail["alpn"], "h3");
+    assert_eq!(sample.detail["tls"]["verified"], true);
+    assert!(prober.requests()[0].quic);
+
+    // over TCP there is neither
+    let tcp = Scripted::new(finding(true, None));
+    let frames = run(tcp.clone(), pinned()).await;
+    let detail = sample_of(&frames).detail;
+    assert!(detail.get("transport").is_none() && detail.get("alpn").is_none());
+    assert!(!tcp.requests()[0].quic);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_transport_nobody_knows_is_refused_before_anything_is_sent() {
+    for transport in ["udp", "doh", "dot", "QUIC"] {
+        let prober = Scripted::new(finding(true, None));
+        let frames = run(
+            prober.clone(),
+            task_with(
+                json!({"ip": "93.184.216.34", "port": 443, "server_name": "example.com"}),
+                json!({"timeout_ms": 8000, "transport": transport}),
+            ),
+        )
+        .await;
+        assert_eq!(result_of(&frames).0, ResultStatus::Failed, "{transport}");
+        assert!(prober.requests().is_empty(), "{transport}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

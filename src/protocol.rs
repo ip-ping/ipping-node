@@ -229,7 +229,8 @@ pub struct TaskOptions {
     /// dns: ask this public resolver (port 53). Absent means the node's own resolvers.
     #[serde(default)]
     pub resolver_ip: Option<String>,
-    /// dns: `udp` (the default) or `doh`, DNS over HTTPS to `resolver_ip` on port 443.
+    /// dns: `udp` (the default) or `doh`, DNS over HTTPS to `resolver_ip` on port 443. tls: `tcp` (the default) or
+    /// `quic`, a QUIC handshake offering `h3` over UDP.
     #[serde(default)]
     pub transport: Option<String>,
     /// dns over HTTPS: the name the resolver's certificate is for.

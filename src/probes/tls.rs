@@ -26,6 +26,8 @@ pub struct TlsRequest {
     pub server_name: String,
     /// For the connection and the handshake together.
     pub timeout: Duration,
+    /// Over QUIC (UDP, offering `h3`) instead of TLS over TCP.
+    pub quic: bool,
 }
 
 /// What a completed handshake found.
@@ -38,8 +40,12 @@ pub struct Finding {
     pub names: Vec<String>,
     /// How many certificates the server sent.
     pub chain: usize,
+    /// The application protocol agreed (`h3` over QUIC); none for a TLS handshake that offered none.
+    pub alpn: Option<String>,
 }
 
+// One outcome per check, so the size of the handshake variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsOutcome {
     Handshake(Finding),

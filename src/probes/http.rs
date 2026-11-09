@@ -392,6 +392,104 @@ impl HttpClient {
         config
     }
 
+    /// The same over QUIC (the transport of HTTP/3): a QUIC handshake offering the `h3` protocol, UDP to `port`, then
+    /// what the certificate says. A server that is not listening on UDP is silence, so it ends as a timeout.
+    pub async fn quic_handshake(&self, request: &TlsRequest) -> TlsOutcome {
+        use quinn::crypto::rustls::{HandshakeData, QuicClientConfig};
+
+        let deadline = Instant::now() + request.timeout;
+        let failed = |code: &'static str, message: String| TlsOutcome::Failed {
+            code,
+            message,
+            connect: None,
+        };
+        let verdict = Arc::new(Mutex::new(None));
+        let tls = self.client_config(verdict.clone(), vec![b"h3".to_vec()]);
+        let Ok(crypto) = QuicClientConfig::try_from(tls) else {
+            return failed(
+                error_code::INTERNAL_ERROR,
+                "QUIC is not available here.".into(),
+            );
+        };
+        let bind: SocketAddr = if request.ip.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        let Ok(mut endpoint) = quinn::Endpoint::client(bind) else {
+            return failed(
+                error_code::UNSUPPORTED_FAMILY,
+                "Could not open a UDP socket.".into(),
+            );
+        };
+        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+        let started = Instant::now();
+        let Ok(connecting) = endpoint.connect(
+            SocketAddr::new(request.ip, request.port),
+            &request.server_name,
+        ) else {
+            return failed(
+                error_code::TLS_ERROR,
+                "The server name is not valid for TLS.".into(),
+            );
+        };
+        let connection = match timeout_at(deadline, connecting).await {
+            Err(_) => return TlsOutcome::Timeout,
+            Ok(Err(quinn::ConnectionError::TimedOut)) => return TlsOutcome::Timeout,
+            Ok(Err(error)) => {
+                return failed(
+                    error_code::TLS_ERROR,
+                    format!(
+                        "The QUIC handshake failed: {}",
+                        clean(error.to_string().as_bytes(), 160)
+                    ),
+                );
+            }
+            Ok(Ok(connection)) => connection,
+        };
+        let handshake = started.elapsed();
+        let alpn = connection
+            .handshake_data()
+            .and_then(|data| data.downcast::<HandshakeData>().ok())
+            .and_then(|data| data.protocol)
+            .map(|p| clean(&p, 16));
+        let certificates: Vec<CertificateDer<'static>> = connection
+            .peer_identity()
+            .and_then(|identity| identity.downcast::<Vec<CertificateDer<'static>>>().ok())
+            .map(|boxed| *boxed)
+            .unwrap_or_default();
+        let verify_error = verdict.lock().expect("verifier lock").clone();
+        // QUIC is TLS 1.3 by definition; the cipher suite is not exposed.
+        let mut info = TlsInfo {
+            version: Some("TLSv1.3".to_owned()),
+            cipher: None,
+            subject: None,
+            issuer: None,
+            not_before: None,
+            not_after: None,
+            verified: verify_error.is_none(),
+            verify_error,
+        };
+        if let Some(leaf) = certificates.first() {
+            fill_certificate(&mut info, leaf.as_ref());
+        }
+        let (names, chain) = names_from(&certificates);
+        connection.close(0u32.into(), b"");
+        let _ = timeout_at(
+            Instant::now() + Duration::from_millis(200),
+            endpoint.wait_idle(),
+        )
+        .await;
+        TlsOutcome::Handshake(Finding {
+            connect: Duration::ZERO,
+            handshake,
+            info,
+            names,
+            chain,
+            alpn,
+        })
+    }
+
     /// Connect and complete a TLS handshake, then read what the certificate says and hang up. No
     /// request is sent, over any connection, trusted or not.
     pub async fn handshake(&self, request: &TlsRequest) -> TlsOutcome {
@@ -457,6 +555,7 @@ impl HttpClient {
             info,
             names,
             chain,
+            alpn: None,
         })
     }
 
@@ -726,24 +825,32 @@ fn tls_info(connection: &rustls::ClientConnection, verify_error: Option<String>)
         verified: verify_error.is_none(),
         verify_error,
     };
-    if let Some(leaf) = connection.peer_certificates().and_then(|c| c.first())
-        && let Ok((_, certificate)) = x509_parser::parse_x509_certificate(leaf.as_ref())
-    {
+    if let Some(leaf) = connection.peer_certificates().and_then(|c| c.first()) {
+        fill_certificate(&mut info, leaf.as_ref());
+    }
+    info
+}
+
+/// Who the leaf certificate is for, who issued it and when it is valid.
+fn fill_certificate(info: &mut TlsInfo, leaf: &[u8]) {
+    if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(leaf) {
         info.subject = Some(clean(certificate.subject().to_string().as_bytes(), 200));
         info.issuer = Some(clean(certificate.issuer().to_string().as_bytes(), 200));
         let rfc3339 = |t: OffsetDateTime| t.format(&Rfc3339).ok();
         info.not_before = rfc3339(certificate.validity().not_before.to_datetime());
         info.not_after = rfc3339(certificate.validity().not_after.to_datetime());
     }
-    info
 }
 
 /// The names the server's certificate is valid for, and how many certificates it sent. Only what fits
 /// in a result is kept, and control characters are replaced.
 fn certificate_names(connection: &rustls::ClientConnection) -> (Vec<String>, usize) {
+    names_from(connection.peer_certificates().unwrap_or_default())
+}
+
+fn names_from(certificates: &[CertificateDer<'_>]) -> (Vec<String>, usize) {
     use x509_parser::extensions::GeneralName;
 
-    let certificates = connection.peer_certificates().unwrap_or_default();
     let mut names = vec![];
     if let Some(leaf) = certificates.first()
         && let Ok((_, certificate)) = x509_parser::parse_x509_certificate(leaf.as_ref())
