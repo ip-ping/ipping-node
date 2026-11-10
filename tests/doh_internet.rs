@@ -12,7 +12,11 @@ use ipping_node::probes::http::HttpClient;
 #[ignore = "needs the internet"]
 async fn the_public_resolvers_answer_over_https() {
     let client = HttpClient::new();
-    for (ip, host) in [("1.1.1.1", "cloudflare-dns.com"), ("8.8.8.8", "dns.google")] {
+    for (ip, host) in [
+        ("1.1.1.1", "cloudflare-dns.com"),
+        ("8.8.8.8", "dns.google"),
+        ("9.9.9.9", "dns.quad9.net"),
+    ] {
         let target = DohTarget {
             host: host.into(),
             path: "/dns-query".into(),
@@ -59,11 +63,12 @@ async fn the_public_resolvers_answer_over_https() {
     }
 }
 
-/// Quad9 answers DNS over HTTPS only over HTTP/2 (`505 HTTP Version Not Supported ... requires HTTP/2`), which this
-/// node does not speak, so it is not offered. If this test starts failing, Quad9 has begun to accept HTTP/1.1.
+/// Quad9 answers DNS over HTTPS only over HTTP/2 (`505 HTTP Version Not Supported ... requires HTTP/2`). The node
+/// offers `h2` and speaks it when the server picks it, so a resolver that needs it is no different from the others.
+/// If this fails with a protocol error, Quad9 or the HTTP/2 client has changed.
 #[tokio::test]
 #[ignore = "needs the internet"]
-async fn quad9_needs_http2_and_so_is_a_protocol_error_here() {
+async fn quad9_is_asked_over_http2() {
     let target = DohTarget {
         host: "dns.quad9.net".into(),
         path: "/dns-query".into(),
@@ -78,8 +83,9 @@ async fn quad9_needs_http2_and_so_is_a_protocol_error_here() {
         Duration::from_secs(8),
     )
     .await;
-    assert_eq!(
-        outcome,
-        DnsOutcome::Failed(ipping_node::protocol::error_code::PROTOCOL_ERROR)
-    );
+    let DnsOutcome::Answer(answer) = outcome else {
+        panic!("quad9: {outcome:?}");
+    };
+    assert_eq!(answer.rcode, 0);
+    assert!(!answer.records.is_empty());
 }

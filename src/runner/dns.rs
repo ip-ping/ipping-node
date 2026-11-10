@@ -193,9 +193,8 @@ impl<P: Prober, R: Resolve> Runner<P, R> {
             }
             DnsOutcome::Failed(code) => {
                 let message = match code {
-                    // Some resolvers (Quad9) answer DNS over HTTPS only over HTTP/2, which this node does not speak.
                     error_code::PROTOCOL_ERROR if plan.doh.is_some() => {
-                        "The resolver did not answer the HTTPS query. Some resolvers require HTTP/2, which this node does not speak."
+                        "The resolver did not answer the HTTPS query with a DNS message."
                     }
                     error_code::DNS_FAILURE => "This node has no resolver configured.",
                     error_code::CONNECTION_REFUSED => "The resolver refused the connection.",

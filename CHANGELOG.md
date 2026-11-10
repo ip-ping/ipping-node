@@ -4,6 +4,21 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## Unreleased
 
+### DNS over HTTPS over HTTP/2 (Quad9)
+- The DoH client offers `h2` and `http/1.1` in the TLS handshake and speaks what the server picks. Quad9 answers
+  `505 HTTP Version Not Supported` to HTTP/1.1, so before this it could not be asked; now it answers (A, TXT and NXDOMAIN
+  for a missing name, in the ignored internet test, in about 25 ms). Cloudflare and Google also pick h2, so they are asked
+  over HTTP/2 now; a server that picks nothing, or `http/1.1`, is asked as before.
+- Uses the `h2` crate (hyper's HTTP/2), driven inside the same task as the request so the deadline ends the connection.
+  The certificate is checked before anything is sent, the body is read to 16 KiB and no further, and a reset stream,
+  an error status, a wrong content type or too long a body are protocol errors or a reset, never a hang. The Linux arm64
+  release binary grows from 4.94 MB (v0.6.0) to 5.46 MB.
+- Tests: a loopback HTTP/2-only server with a test CA (the request is a GET whose authority is the certificate name, with
+  `accept` and `user-agent`; the answer in one frame and in two; a 505 and a 404, a wrong type, a body that is too long and
+  a reset stream; silence is a timeout; an untrusted certificate stops it before any request); the HTTP/1.1 tests now run
+  against a server that offers only `http/1.1`, which proves the fallback. 9 tests in `doh_live.rs`.
+- The error message for a DoH question that got no DNS message no longer blames missing HTTP/2.
+
 ### What the released v0.6.0 does against real QUIC servers
 - Checked with the released binary on a fresh Debian 13: `www.cloudflare.com` and `example.com` complete a QUIC handshake
   offering `h3` and agree `h3` (trusted, TLS 1.3). `github.com` and `expired.badssl.com` do not serve HTTP/3 and come back

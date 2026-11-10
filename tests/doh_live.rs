@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use ipping_node::probes::dns::{DnsOutcome, RecordType};
 use ipping_node::probes::doh::{DohTarget, query};
 use ipping_node::probes::http::HttpClient;
@@ -105,7 +106,8 @@ impl Pki {
         HttpClient::with_roots(roots)
     }
 
-    async fn serve(&self, reply: Reply) -> Server {
+    /// A TLS server configuration for `doh.test`, offering these application protocols (in the server's order).
+    fn server_config(&self, alpn: &[&[u8]]) -> Arc<rustls::ServerConfig> {
         let mut params = CertificateParams::new(vec!["doh.test".to_owned()]).unwrap();
         params
             .distinguished_name
@@ -114,7 +116,7 @@ impl Pki {
         params.not_after = date_time_ymd(2099, 1, 1);
         let key = KeyPair::generate().unwrap();
         let leaf = params.signed_by(&key, &self.ca).unwrap();
-        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
             ring_provider::default_provider(),
         ))
         .with_safe_default_protocol_versions()
@@ -125,7 +127,13 @@ impl Pki {
             PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key.serialize_der())),
         )
         .unwrap();
-        let acceptor = TlsAcceptor::from(Arc::new(config));
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    }
+
+    /// An HTTP/1.1 server (the only protocol it offers).
+    async fn serve(&self, reply: Reply) -> Server {
+        let acceptor = TlsAcceptor::from(self.server_config(&[b"http/1.1"]));
         let listener = TcpListener::bind((LOOPBACK, 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let received = Arc::new(Mutex::new(String::new()));
@@ -347,4 +355,200 @@ async fn silence_is_a_timeout_and_a_closed_port_is_a_refusal() {
         ask(&pki.client(), port).await,
         DnsOutcome::Failed(error_code::CONNECTION_REFUSED)
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// HTTP/2: what Quad9 requires
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum H2Reply {
+    Answer,
+    /// The answer in two DATA frames.
+    AnswerInTwoFrames,
+    Status(u16),
+    WrongType,
+    /// More body than the node reads.
+    TooLong,
+    /// The stream is reset before any answer.
+    Reset,
+    Silent,
+}
+
+impl Pki {
+    /// An HTTP/2-only server: a client that does not speak HTTP/2 does not get past the handshake.
+    async fn serve_h2(&self, reply: H2Reply) -> Server {
+        let acceptor = TlsAcceptor::from(self.server_config(&[b"h2"]));
+        let listener = TcpListener::bind((LOOPBACK, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = Arc::new(Mutex::new(String::new()));
+        let captured = received.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let Ok(tls) = acceptor.accept(stream).await else {
+                return;
+            };
+            let Ok(mut connection) = h2::server::handshake(tls).await else {
+                return;
+            };
+            while let Some(Ok((request, mut respond))) = connection.accept().await {
+                *captured.lock().unwrap() = format!(
+                    "{} {} {:?}",
+                    request.method(),
+                    request.uri(),
+                    request.headers()
+                );
+                let query = request
+                    .uri()
+                    .query()
+                    .and_then(|q| q.strip_prefix("dns="))
+                    .map(base64url_decode)
+                    .unwrap_or_default();
+                let head = |status: u16, content_type: &str| {
+                    http::Response::builder()
+                        .status(status)
+                        .header("content-type", content_type)
+                        .body(())
+                        .unwrap()
+                };
+                match reply {
+                    H2Reply::Answer => {
+                        let mut send = respond
+                            .send_response(head(200, "application/dns-message"), false)
+                            .unwrap();
+                        send.send_data(Bytes::from(dns_answer(&query)), true)
+                            .unwrap();
+                    }
+                    H2Reply::AnswerInTwoFrames => {
+                        let body = dns_answer(&query);
+                        let (a, b) = body.split_at(body.len() / 2);
+                        let mut send = respond
+                            .send_response(head(200, "application/dns-message"), false)
+                            .unwrap();
+                        send.send_data(Bytes::copy_from_slice(a), false).unwrap();
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        send.send_data(Bytes::copy_from_slice(b), true).unwrap();
+                    }
+                    H2Reply::Status(code) => {
+                        let mut send = respond
+                            .send_response(head(code, "text/plain"), false)
+                            .unwrap();
+                        send.send_data(Bytes::from_static(b"no"), true).unwrap();
+                    }
+                    H2Reply::WrongType => {
+                        let mut send = respond
+                            .send_response(head(200, "text/html"), false)
+                            .unwrap();
+                        send.send_data(Bytes::from_static(b"<html>"), true).unwrap();
+                    }
+                    H2Reply::TooLong => {
+                        let mut send = respond
+                            .send_response(head(200, "application/dns-message"), false)
+                            .unwrap();
+                        for _ in 0..5 {
+                            // 5 x 4 KiB: more than the 16 KiB a DNS answer may take here
+                            if send.send_data(Bytes::from(vec![0u8; 4096]), false).is_err() {
+                                break;
+                            }
+                        }
+                        let _ = send.send_data(Bytes::new(), true);
+                    }
+                    H2Reply::Reset => respond.send_reset(h2::Reason::REFUSED_STREAM),
+                    H2Reply::Silent => {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        return;
+                    }
+                }
+            }
+        });
+        Server {
+            port,
+            received,
+            task,
+        }
+    }
+}
+
+#[tokio::test]
+async fn over_http2_the_question_is_a_get_whose_authority_is_the_certificate_name() {
+    let pki = Pki::new();
+    for reply in [H2Reply::Answer, H2Reply::AnswerInTwoFrames] {
+        let server = pki.serve_h2(reply).await;
+        let DnsOutcome::Answer(answer) = ask(&pki.client(), server.port).await else {
+            panic!("expected an answer over HTTP/2");
+        };
+        assert_eq!(answer.rcode, 0);
+        assert_eq!(answer.records.len(), 1);
+        assert_eq!(answer.records[0].data, "192.0.2.55");
+        assert!(!answer.via_tcp);
+
+        let request = server.finish().await;
+        assert!(
+            request.starts_with("GET https://doh.test/dns-query?dns="),
+            "{request}"
+        );
+        assert!(
+            request.contains("\"accept\": \"application/dns-message\""),
+            "{request}"
+        );
+        assert!(
+            request.contains("\"user-agent\": \"ipping-node/"),
+            "{request}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_http2_server_that_answers_badly_is_a_protocol_error_or_a_reset() {
+    let pki = Pki::new();
+    for (reply, expected) in [
+        (H2Reply::Status(505), error_code::PROTOCOL_ERROR),
+        (H2Reply::Status(404), error_code::PROTOCOL_ERROR),
+        (H2Reply::WrongType, error_code::PROTOCOL_ERROR),
+        (H2Reply::TooLong, error_code::PROTOCOL_ERROR),
+        (H2Reply::Reset, error_code::CONNECTION_RESET),
+    ] {
+        let server = pki.serve_h2(reply).await;
+        assert_eq!(
+            ask(&pki.client(), server.port).await,
+            DnsOutcome::Failed(expected),
+            "{}",
+            match reply {
+                H2Reply::Status(code) => format!("status {code}"),
+                H2Reply::WrongType => "wrong type".into(),
+                H2Reply::TooLong => "too long".into(),
+                H2Reply::Reset => "reset".into(),
+                _ => unreachable!(),
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_http2_server_that_stays_silent_is_a_timeout() {
+    let pki = Pki::new();
+    let server = pki.serve_h2(H2Reply::Silent).await;
+    let outcome = query(
+        &pki.client(),
+        LOOPBACK,
+        server.port,
+        &target(),
+        "www.example.com",
+        RecordType::A,
+        Duration::from_millis(600),
+    )
+    .await;
+    assert_eq!(outcome, DnsOutcome::Timeout);
+}
+
+#[tokio::test]
+async fn a_certificate_that_does_not_verify_stops_an_http2_query_before_it_is_sent() {
+    let pki = Pki::new();
+    let server = pki.serve_h2(H2Reply::Answer).await;
+    let stranger = Pki::new(); // trusts another CA
+    assert_eq!(
+        ask(&stranger.client(), server.port).await,
+        DnsOutcome::Failed(error_code::TLS_CERTIFICATE_INVALID)
+    );
+    assert_eq!(server.finish().await, "", "no request reached the server");
 }

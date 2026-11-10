@@ -111,7 +111,7 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | `ping` | an ICMP echo | 1 to 10 per task, 56-byte payload, public addresses only |
 | `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
 | `traceroute` | one hop (three probes, or more with `count` above one) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address. With `count` rounds the trace is repeated like `mtr`: one probe per hop and round, `interval_ms` apart, and each hop is reported once with every reply and how many probes it got |
-| `dns` | one question to one resolver, answered in full | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`; the resolver is a public one the backend names (port 53) or this node's own (`/etc/resolv.conf`); `transport` `doh` asks over HTTPS instead (RFC 8484 GET on port 443, the certificate checked for the resolver's name; Cloudflare and Google work, Quad9 needs HTTP/2, which this node does not speak); names that are internal (`.lan`, `.corp`, single labels ...) are refused; from the node's own resolver, private addresses in an answer are counted but never reported |
+| `dns` | one question to one resolver, answered in full | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`; the resolver is a public one the backend names (port 53) or this node's own (`/etc/resolv.conf`); `transport` `doh` asks over HTTPS instead (RFC 8484 GET on port 443, the certificate checked for the resolver's name; Cloudflare, Google and Quad9 work; the node offers `h2` and speaks HTTP/2 when the server picks it, which Quad9 needs); names that are internal (`.lan`, `.corp`, single labels ...) are refused; from the node's own resolver, private addresses in an answer are counted but never reported |
 | `tls` | one TLS handshake with no request after it (`transport` `quic`: a QUIC handshake over UDP offering `h3`, the transport of HTTP/3) | same ports as TCP; the certificate is checked against the Mozilla roots for the name presented (or the address, for a bare address) and a certificate that does not verify is still described, with the reason; it reports the version, cipher, subject, issuer, validity, up to 24 names the certificate is valid for and how many certificates the server sent |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
 
@@ -227,7 +227,8 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [ ] Over the real public IPv6 internet (needs a host with IPv6 connectivity; neither the development machine nor CI runners have it)
 - [x] DNS checks (A, AAAA, CNAME, MX, NS, TXT, SOA from a public resolver or the node's own; the comparison across nodes is in the web interface)
 - [x] QUIC as a transport of the certificate check (tested against a real QUIC server on loopback and a real HTTP/3 server)
-- [x] DNS over HTTPS as a transport of the DNS check (tested against real Cloudflare and Google; Quad9 needs HTTP/2)
+- [x] DNS over HTTPS as a transport of the DNS check (tested against real Cloudflare, Google and Quad9)
+- [x] HTTP/2 for DNS over HTTPS (the `h2` crate; Quad9 answers no other way), tested against a loopback HTTP/2 server and the real Quad9
 - [x] Certificate checks (a handshake with no request: what the certificate says and whether this node trusts it)
 - [x] Repeated traceroute rounds, like `mtr` (loss and spread per hop; tested through real routers in network namespaces)
 

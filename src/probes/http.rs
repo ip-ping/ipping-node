@@ -24,7 +24,7 @@ use rustls::{
 use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout_at};
 use tokio_rustls::TlsConnector;
@@ -350,6 +350,103 @@ fn clean(bytes: &[u8], max: usize) -> String {
         .collect()
 }
 
+/// The same GET over HTTP/2, on a connection that already passed the certificate check. One stream, the body read
+/// to `max_body` and no further (a longer one is refused), all of it inside `deadline`.
+async fn get_body_h2<T>(io: T, request: &BodyRequest, deadline: Instant) -> BodyOutcome
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let failed = |code: &'static str, message: &str| BodyOutcome::Failed {
+        code,
+        message: message.to_owned(),
+    };
+    let h2_failed = |error: &h2::Error| {
+        if error.is_reset() || error.is_go_away() || error.is_io() {
+            failed(
+                error_code::CONNECTION_RESET,
+                "The connection closed before the answer arrived.",
+            )
+        } else {
+            failed(error_code::PROTOCOL_ERROR, "The server broke HTTP/2.")
+        }
+    };
+    let Ok(message) = http::Request::builder()
+        .method("GET")
+        .uri(format!("https://{}{}", request.server_name, request.target))
+        .header("user-agent", USER_AGENT)
+        .header("accept", request.accept)
+        .body(())
+    else {
+        return failed(
+            error_code::INTERNAL_ERROR,
+            "The request could not be built.",
+        );
+    };
+    let work = async {
+        let (sender, connection) = match h2::client::handshake(io).await {
+            Ok(pair) => pair,
+            Err(error) => return h2_failed(&error),
+        };
+        // The connection is driven here, in the same task, so that dropping this future (the deadline) ends it.
+        let exchange = async {
+            let mut sender = match sender.ready().await {
+                Ok(sender) => sender,
+                Err(error) => return h2_failed(&error),
+            };
+            let response = match sender.send_request(message, true) {
+                Ok((response, _)) => response,
+                Err(error) => return h2_failed(&error),
+            };
+            let response = match response.await {
+                Ok(response) => response,
+                Err(error) => return h2_failed(&error),
+            };
+            let status = response.status().as_u16();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| clean(value.as_bytes(), 120));
+            let mut stream = response.into_body();
+            let mut body = Vec::new();
+            while let Some(chunk) = stream.data().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => return h2_failed(&error),
+                };
+                body.extend_from_slice(&chunk);
+                if body.len() > request.max_body {
+                    return failed(error_code::PROTOCOL_ERROR, "The response is too long.");
+                }
+                let _ = stream.flow_control().release_capacity(chunk.len());
+            }
+            BodyOutcome::Response(BodyResponse {
+                status,
+                content_type,
+                body,
+            })
+        };
+        tokio::pin!(exchange, connection);
+        let mut connection_done = false;
+        loop {
+            tokio::select! {
+                outcome = &mut exchange => return outcome,
+                ended = &mut connection, if !connection_done => {
+                    connection_done = true;
+                    if let Err(error) = ended {
+                        return h2_failed(&error);
+                    }
+                    // A clean close: the answer may already be complete, so let the exchange say.
+                }
+            }
+        }
+    };
+    match timeout_at(deadline, work).await {
+        Ok(outcome) => outcome,
+        Err(_) => BodyOutcome::Timeout,
+    }
+}
+
 pub struct HttpClient {
     provider: Arc<CryptoProvider>,
     verifier: Arc<WebPkiServerVerifier>,
@@ -596,7 +693,7 @@ impl HttpClient {
         };
         let verdict = Arc::new(Mutex::new(None));
         let connector = TlsConnector::from(Arc::new(
-            self.client_config(verdict.clone(), vec![b"http/1.1".to_vec()]),
+            self.client_config(verdict.clone(), vec![b"h2".to_vec(), b"http/1.1".to_vec()]),
         ));
         let mut tls = match timeout_at(deadline, connector.connect(server_name, stream)).await {
             Err(_) => return BodyOutcome::Timeout,
@@ -613,6 +710,11 @@ impl HttpClient {
         };
         if let Some(reason) = verdict.lock().expect("verifier lock").clone() {
             return failed(error_code::TLS_CERTIFICATE_INVALID, &reason);
+        }
+        // A server that picked h2 is spoken to in HTTP/2 (Quad9 answers DNS over HTTPS no other way); one that
+        // picked nothing, or http/1.1, in HTTP/1.1.
+        if tls.get_ref().1.alpn_protocol() == Some(b"h2") {
+            return get_body_h2(tls, request, deadline).await;
         }
         let text = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\nAccept: {}\r\nConnection: close\r\n\r\n",
