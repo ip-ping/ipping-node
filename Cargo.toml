@@ -1,6 +1,6 @@
 [package]
 name = "ipping-node"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Measurement node for ipping: runs bounded network probes on behalf of the backend"

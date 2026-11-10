@@ -2,7 +2,16 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.7.0 (2026-11-10)
+
+DNS over HTTPS over HTTP/2, so Quad9 can be asked. Asking Quad9 needs backend v0.7.0, which only sends it to nodes of this
+version; everything else is as before.
+
+### Public IPv6 on the internet: still untested, and now known to be untestable from here
+Asked a GitHub-hosted runner with a throwaway workflow: it has only a link-local IPv6 address and no route (`curl -6
+https://ipv6.google.com` fails to connect), like the development Mac and Docker. The workflow was removed again. Whether a
+host has IPv6 is decided on every connection by a route lookup, not assumed (`has_route`), so a host that gains IPv6 starts
+announcing it when its node next connects; the lab in network namespaces remains the test.
 
 ### DNS over HTTPS over HTTP/2 (Quad9)
 - The DoH client offers `h2` and `http/1.1` in the TLS handshake and speaks what the server picks. Quad9 answers
