@@ -329,6 +329,15 @@ detect_arch() {
   esac
 }
 
+# glibc or musl. Alpine Linux is musl, which cannot run the glibc binary, so it gets the static musl build.
+detect_libc() {
+  local loader
+  for loader in /lib/ld-musl-*.so.1; do
+    if [ -e "$loader" ]; then echo musl; return; fi
+  done
+  echo glibc
+}
+
 installed_mode() {
   if [ -f "$MODE_FILE" ]; then cat "$MODE_FILE"; fi
 }
@@ -373,14 +382,21 @@ resolve_version() {
 download_verified_binary() {
   # download_verified_binary TAG DEST -> fetches the binary for this CPU and checks it against the
   # release's SHA256SUMS. Refuses to continue on any mismatch.
-  local tag="$1" dest="$2" arch asset tmp expected actual
+  local tag="$1" dest="$2" arch libc asset tmp expected actual
   arch="$(detect_arch)"
+  libc="$(detect_libc)"
   asset="ipping-node-linux-${arch}"
+  if [ "$libc" = musl ]; then asset="${asset}-musl"; fi
   tmp="$(make_temp_dir)"
-  run "Downloading ipping-node ${tag} (${arch})" fetch "${RELEASE_BASE}/${tag}/${asset}" "${tmp}/${asset}"
   fetch "${RELEASE_BASE}/${tag}/SHA256SUMS" "${tmp}/SHA256SUMS" || die "Could not download SHA256SUMS for ${tag}."
   expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS" | head -n 1)"
-  [ -n "$expected" ] || die "SHA256SUMS has no entry for ${asset}."
+  if [ -z "$expected" ]; then
+    if [ "$libc" = musl ]; then
+      die "${tag} has no build for this host's libc (musl, as on Alpine): that needs v0.7.2 or newer. Pass --version, or use --mode docker."
+    fi
+    die "SHA256SUMS has no entry for ${asset}."
+  fi
+  run "Downloading ipping-node ${tag} (${arch}${libc:+, ${libc}})" fetch "${RELEASE_BASE}/${tag}/${asset}" "${tmp}/${asset}"
   actual="$(sha256sum "${tmp}/${asset}" | awk '{ print $1 }')"
   [ "$expected" = "$actual" ] || die "Checksum mismatch for ${asset} (expected ${expected}, got ${actual}). Nothing was installed."
   tick "Checked it against the release's published checksum"
@@ -442,11 +458,11 @@ as_service_user() {
   if command_exists runuser; then runuser -u "$RUN_USER" -- "$@"; else su-exec "$RUN_USER" "$@"; fi
 }
 
-# Alpine: what the installer itself needs, and what lets the glibc release binaries run on musl (gcompat).
+# Alpine: what the installer itself needs (the node is a static musl build, so nothing more).
 prepare_alpine() {
   command_exists apk || die "This looks like Alpine Linux but apk is missing."
   local packages="curl ca-certificates"
-  if [ "$1" = direct ]; then packages="$packages su-exec gcompat libgcc"; fi
+  if [ "$1" = direct ]; then packages="$packages su-exec"; fi
   # shellcheck disable=SC2086  # a list of package names
   run "Installing ${packages// /, } (apk)" apk add --no-cache $packages
 }
@@ -834,12 +850,7 @@ install_direct_mode() {
     download_verified_binary "$tag" "${releases_dir}/ipping-node"
   fi
   binary="${releases_dir}/ipping-node"
-  if ! "$binary" --version >/dev/null 2>&1; then
-    if [ "$init" = openrc ]; then
-      die "The downloaded binary does not run on this host. The release binaries are built for glibc and run on Alpine through gcompat (installed here); if that is not enough, use --mode docker."
-    fi
-    die "The downloaded binary does not run on this host."
-  fi
+  "$binary" --version >/dev/null 2>&1 || die "The downloaded binary does not run on this host. Use --mode docker instead."
   grant_icmp "$binary"
 
   ln -sfn "$releases_dir" "${APP_DIR}/current"

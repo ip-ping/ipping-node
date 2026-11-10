@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 
+# Which architecture the musl build is for (named before the first FROM so a FROM can use it).
+ARG TARGETARCH
+
 # The compiler always runs natively on the build machine and cross-compiles for the target, so a
 # multi-architecture build does not pay for emulated compilation. Building on Debian 11 keeps the
 # binary's glibc requirement low (2.31), which also makes the release binaries widely usable.
@@ -34,6 +37,22 @@ RUN set -eu; \
 # the release workflow uses this to publish downloadable executables.
 FROM scratch AS binary
 COPY --from=build /out/ipping-node /ipping-node
+
+# A static musl build for Alpine Linux, which cannot run the glibc binary above. These images carry musl cross
+# toolchains for the target and run on the build machine, so nothing is emulated. Not part of the runtime image:
+# `--target binary-musl` extracts it, the release workflow publishes it as ipping-node-linux-<arch>-musl.
+FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/rust-musl-cross:x86_64-musl AS musl-amd64
+FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/rust-musl-cross:aarch64-musl AS musl-arm64
+FROM musl-${TARGETARCH} AS build-musl
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN set -eu; \
+    cargo build --release --locked; \
+    cp "target/${RUST_MUSL_CROSS_TARGET}/release/ipping-node" /ipping-node
+
+FROM scratch AS binary-musl
+COPY --from=build-musl /ipping-node /ipping-node
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 

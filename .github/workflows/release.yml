@@ -123,6 +123,19 @@ jobs:
             cp "out/$arch/ipping-node" "ipping-node-linux-$arch"
           done
           ls -l ipping-node-linux-*
+      - name: Build the static musl binaries for Alpine Linux
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/$arch" --target binary-musl \
+              --output "type=local,dest=out-musl/$arch" .
+            cp "out-musl/$arch/ipping-node" "ipping-node-linux-$arch-musl"
+          done
+          ls -l ipping-node-linux-*-musl
+          # Static means nothing is loaded at run time: a dynamic one would not start on Alpine.
+          for f in ipping-node-linux-*-musl; do
+            if readelf -d "$f" 2>/dev/null | grep -q NEEDED; then echo "$f is not static" >&2; exit 1; fi
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries

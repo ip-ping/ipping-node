@@ -2,6 +2,27 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## v0.7.2 (2026-11-10)
+
+The node runs on Alpine Linux: the release now carries **static musl binaries**, and the installer picks them there.
+
+- v0.7.1's installer ran the glibc binary on Alpine through `gcompat`, which does not work ("The downloaded binary does not
+  run on this host"). Every release now also publishes `ipping-node-linux-amd64-musl` and `ipping-node-linux-arm64-musl`
+  (built from the same source with `--target binary-musl` in the Dockerfile, on `ghcr.io/rust-cross/rust-musl-cross`, which
+  cross-compiles on the build machine without emulation; the release workflow refuses a musl file that is not static).
+  They are in `SHA256SUMS` and attested like the others.
+- The installer picks the asset by libc (`detect_libc`: a `/lib/ld-musl-*.so.1` means musl), checks `SHA256SUMS` before
+  downloading, and for a release without a musl build says that Alpine needs v0.7.2 or newer. `gcompat` and `libgcc` are no
+  longer installed.
+- **Run on a real Alpine 3.21 (arm64) with OpenRC**: started with plain `sh` (it installed bash and ran itself again), the
+  musl binary downloaded and checked, enrolled over HTTP, and run by `supervise-daemon`; once approved it did ping (ICMP),
+  TCP, DNS, DNS over HTTPS (HTTP/2) to Quad9, TLS, HTTP and traceroute. `status`, `doctor` (all checks), `stop`, `start`,
+  `restart`, `logs`, `update` (to a newer release, staying up) and `uninstall --purge` (service, config, directories, log,
+  runlevel entry and account all gone) work on it, the service is in the default runlevel so it starts at boot, and a
+  `kill -9` of the node is followed by the supervisor starting it again.
+- Not run: the **amd64** musl binary (this machine cannot run amd64 containers; it is built the same way and checked as a
+  static ELF only).
+
 ## v0.7.1 (2026-11-10)
 
 The installer runs the node with **OpenRC on Alpine Linux** instead of systemd. The node itself is unchanged.
@@ -11,14 +32,13 @@ The installer runs the node with **OpenRC on Alpine Linux** instead of systemd. 
   overrides it) and in direct mode writes `/etc/init.d/ipping-node` (run by `supervise-daemon`, restart after 3 s, enabled in
   the default runlevel, log in `/var/log/ipping-node.log`) and `/etc/conf.d/ipping-node` for the environment, instead of a
   systemd unit. `start`, `stop`, `restart`, `logs`, `status`, `doctor`, `update` (with the same rollback) and `uninstall` use it.
-- Everything else Alpine does differently: packages come from `apk` (`curl`, `ca-certificates`, `su-exec`, and `gcompat` and
-  `libgcc` because the release binaries are glibc builds); the account is made with `addgroup`/`adduser` and removed with
+- Everything else Alpine does differently: packages come from `apk` (`curl`, `ca-certificates`, `su-exec`; v0.7.1 also installed
+  `gcompat` and `libgcc`); the account is made with `addgroup`/`adduser` and removed with
   `deluser`; enrollment runs as that account through `su-exec` where there is no `runuser`; when the account cannot send
   unprivileged pings the binary gets `CAP_NET_RAW` as a file capability (re-applied on every update); `--mode docker` installs
   Docker from `apk` and starts it with OpenRC.
 - A script started with `sh` (Alpine has no bash) installs bash and runs itself again.
-- **Not run on an Alpine host before this release** (it was written and linted only): whether the glibc binary runs under
-  `gcompat` is the open question, and the installer says to use `--mode docker` if it does not.
+- **It did not work**: the glibc binary does not run on Alpine through `gcompat`. Fixed in v0.7.2 with musl builds.
 
 ## v0.7.0 (2026-11-10)
 

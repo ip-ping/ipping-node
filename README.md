@@ -68,11 +68,12 @@ get `CAP_NET_RAW`, and nothing else.
 
 **Alpine Linux** is detected and uses OpenRC instead of systemd: an init script in `/etc/init.d/ipping-node` run by
 `supervise-daemon` (restarts after a crash, starts at boot, log in `/var/log/ipping-node.log`), the service account made
-with `adduser`, and packages from `apk` (`curl`, `su-exec`, and `gcompat` + `libgcc`, because the release binaries are
-built for glibc and Alpine is musl). If the installer's `ipping-node.sh` is started with `sh`, it installs bash and runs
-itself again. OpenRC has no capability setting, so if the service account cannot send unprivileged pings the binary gets
-`CAP_NET_RAW` as a file capability (`libcap-utils`). `--mode docker` also works on Alpine (Docker from `apk`). This path
-was written without being run on a real Alpine host; if the binary will not start under `gcompat`, use `--mode docker`.
+with `adduser`, and packages from `apk` (`curl`, `su-exec`). Alpine is musl and cannot run the glibc binary, so every
+release also carries a **static musl build** (`ipping-node-linux-amd64-musl`, `ipping-node-linux-arm64-musl`, verified in
+`SHA256SUMS` like the others) and the installer picks it by looking for the musl loader (v0.7.2 and newer; an older
+release has none and the installer says so). If `ipping-node.sh` is started with `sh`, it installs bash and runs itself
+again. OpenRC has no capability setting, so if the service account cannot send unprivileged pings the binary gets
+`CAP_NET_RAW` as a file capability (`libcap-utils`). `--mode docker` also works on Alpine (Docker from `apk`).
 
 ## Run it
 
