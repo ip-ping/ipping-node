@@ -33,8 +33,8 @@ curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/ip-pi
 Or run it non-interactively:
 
 ```bash
-# Direct: a systemd service, no Docker, no Rust. Downloads one named release and verifies it
-# against that release's SHA256SUMS before installing.
+# Direct: a systemd service (an OpenRC one on Alpine Linux, picked automatically), no Docker, no Rust.
+# Downloads one named release and verifies it against that release's SHA256SUMS before installing.
 sudo bash ipping-node.sh install --mode direct --server https://ping.example.com --token ipt_...
 
 # Docker: the same node in a hardened container.
@@ -65,6 +65,14 @@ unencrypted. The layout follows the width of the terminal and is plain text in a
 Direct mode runs as an unprivileged `ipping-node` user under a locked-down systemd unit. It
 checks `net.ipv4.ping_group_range`; only if the user cannot send unprivileged pings does the unit
 get `CAP_NET_RAW`, and nothing else.
+
+**Alpine Linux** is detected and uses OpenRC instead of systemd: an init script in `/etc/init.d/ipping-node` run by
+`supervise-daemon` (restarts after a crash, starts at boot, log in `/var/log/ipping-node.log`), the service account made
+with `adduser`, and packages from `apk` (`curl`, `su-exec`, and `gcompat` + `libgcc`, because the release binaries are
+built for glibc and Alpine is musl). If the installer's `ipping-node.sh` is started with `sh`, it installs bash and runs
+itself again. OpenRC has no capability setting, so if the service account cannot send unprivileged pings the binary gets
+`CAP_NET_RAW` as a file capability (`libcap-utils`). `--mode docker` also works on Alpine (Docker from `apk`). This path
+was written without being run on a real Alpine host; if the binary will not start under `gcompat`, use `--mode docker`.
 
 ## Run it
 

@@ -2,6 +2,24 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## v0.7.1 (2026-11-10)
+
+The installer runs the node with **OpenRC on Alpine Linux** instead of systemd. The node itself is unchanged.
+
+### Alpine / OpenRC
+- `ipping-node.sh` detects Alpine (`/etc/os-release` `ID=alpine`, or `/etc/alpine-release`; `IPPING_NODE_INIT=systemd|openrc`
+  overrides it) and in direct mode writes `/etc/init.d/ipping-node` (run by `supervise-daemon`, restart after 3 s, enabled in
+  the default runlevel, log in `/var/log/ipping-node.log`) and `/etc/conf.d/ipping-node` for the environment, instead of a
+  systemd unit. `start`, `stop`, `restart`, `logs`, `status`, `doctor`, `update` (with the same rollback) and `uninstall` use it.
+- Everything else Alpine does differently: packages come from `apk` (`curl`, `ca-certificates`, `su-exec`, and `gcompat` and
+  `libgcc` because the release binaries are glibc builds); the account is made with `addgroup`/`adduser` and removed with
+  `deluser`; enrollment runs as that account through `su-exec` where there is no `runuser`; when the account cannot send
+  unprivileged pings the binary gets `CAP_NET_RAW` as a file capability (re-applied on every update); `--mode docker` installs
+  Docker from `apk` and starts it with OpenRC.
+- A script started with `sh` (Alpine has no bash) installs bash and runs itself again.
+- **Not run on an Alpine host before this release** (it was written and linted only): whether the glibc binary runs under
+  `gcompat` is the open question, and the installer says to use `--mode docker` if it does not.
+
 ## v0.7.0 (2026-11-10)
 
 DNS over HTTPS over HTTP/2, so Quad9 can be asked. Asking Quad9 needs backend v0.7.0, which only sends it to nodes of this

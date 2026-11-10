@@ -10,6 +10,18 @@
 # Unlike a "pull the latest and upgrade the system" script, an install is reproducible: the binary
 # comes from one named release and is verified against that release's SHA256SUMS, apt is only used
 # to install what is missing, and nothing is upgraded behind your back.
+#
+# On Alpine Linux direct mode is run by OpenRC instead of systemd (and packages come from apk).
+
+# Alpine has busybox ash and no bash: get bash once, and run this script again with it.
+if [ -z "${BASH_VERSION:-}" ]; then
+  if ! command -v bash >/dev/null 2>&1 && command -v apk >/dev/null 2>&1 && [ "$(id -u)" = 0 ]; then
+    apk add --no-cache bash >/dev/null 2>&1 || true
+  fi
+  if command -v bash >/dev/null 2>&1 && [ -f "$0" ]; then exec bash "$0" "$@"; fi
+  echo "ipping-node.sh needs bash (on Alpine: apk add bash). Run it as: bash ipping-node.sh" >&2
+  exit 1
+fi
 
 set -euo pipefail
 
@@ -24,6 +36,9 @@ STATE_DIR="${IPPING_NODE_STATE_DIR:-/var/lib/ipping-node}"
 RUN_USER="${IPPING_NODE_USER:-ipping-node}"
 SERVICE="ipping-node"
 UNIT_FILE="/etc/systemd/system/${SERVICE}.service"
+OPENRC_SCRIPT="/etc/init.d/${SERVICE}"
+OPENRC_CONF="/etc/conf.d/${SERVICE}"
+LOG_FILE="/var/log/${SERVICE}.log"
 BIN_LINK="/usr/local/bin/ipping-node"
 MODE_FILE="${APP_DIR}/mode"
 COMPOSE_PROJECT="ipping-node"
@@ -399,6 +414,43 @@ os_release() {
     printf '%s' "${!1:-}" )
 }
 
+# The service manager direct mode uses: OpenRC on Alpine Linux, systemd everywhere else.
+# IPPING_NODE_INIT=systemd|openrc overrides the detection.
+init_system() {
+  case "${IPPING_NODE_INIT:-}" in systemd | openrc) echo "$IPPING_NODE_INIT"; return ;; esac
+  if [ "$(os_release ID)" = alpine ] || [ -f /etc/alpine-release ]; then echo openrc; else echo systemd; fi
+}
+
+service_manager_name() { if [ "$(init_system)" = openrc ]; then echo OpenRC; else echo systemd; fi; }
+
+svc_start() { if [ "$(init_system)" = openrc ]; then rc-service "$SERVICE" start; else systemctl start "$SERVICE"; fi; }
+svc_stop() { if [ "$(init_system)" = openrc ]; then rc-service "$SERVICE" stop; else systemctl stop "$SERVICE"; fi; }
+svc_restart() { if [ "$(init_system)" = openrc ]; then rc-service "$SERVICE" restart; else systemctl restart "$SERVICE"; fi; }
+svc_active() { if [ "$(init_system)" = openrc ]; then rc-service "$SERVICE" status >/dev/null 2>&1; else systemctl is-active --quiet "$SERVICE"; fi; }
+svc_log_tail() { # svc_log_tail LINES
+  if [ "$(init_system)" = openrc ]; then tail -n "$1" "$LOG_FILE" 2>/dev/null || true
+  else journalctl -u "$SERVICE" --no-pager -n "$1" -o cat 2>/dev/null || true; fi
+}
+svc_log_follow() {
+  if [ "$(init_system)" = openrc ]; then tail -n 100 -f "$LOG_FILE"
+  else journalctl -u "$SERVICE" -f --no-pager -n 100; fi
+}
+svc_log_hint() { if [ "$(init_system)" = openrc ]; then echo "tail ${LOG_FILE}"; else echo "journalctl -u ${SERVICE}"; fi; }
+
+# Run a command as the service account (util-linux's runuser; su-exec on Alpine).
+as_service_user() {
+  if command_exists runuser; then runuser -u "$RUN_USER" -- "$@"; else su-exec "$RUN_USER" "$@"; fi
+}
+
+# Alpine: what the installer itself needs, and what lets the glibc release binaries run on musl (gcompat).
+prepare_alpine() {
+  command_exists apk || die "This looks like Alpine Linux but apk is missing."
+  local packages="curl ca-certificates"
+  if [ "$1" = direct ]; then packages="$packages su-exec gcompat libgcc"; fi
+  # shellcheck disable=SC2086  # a list of package names
+  run "Installing ${packages// /, } (apk)" apk add --no-cache $packages
+}
+
 APT_UPDATED=0
 
 apt_install() {
@@ -413,6 +465,14 @@ apt_install() {
 
 install_docker_if_missing() {
   if command_exists docker && docker compose version >/dev/null 2>&1; then return; fi
+  if command_exists apk; then
+    confirm "Docker is not installed. Install it with apk?" || die "Docker is required for --mode docker."
+    step "Installing Docker"
+    run "Installing Docker Engine and the compose plugin" apk add --no-cache docker docker-cli-compose
+    rc-update add docker default >/dev/null 2>&1 || true
+    rc-service docker start >/dev/null 2>&1 || true
+    return
+  fi
   command_exists apt-get || die "Docker with the compose plugin is required. Install it (https://docs.docker.com/engine/install/) and run this again."
   local distro codename
   distro="$(os_release ID)"
@@ -468,7 +528,7 @@ EOF
 
 node_recent_log() {
   case "$(installed_mode)" in
-    direct) journalctl -u "$SERVICE" -n 60 --no-pager -o cat 2>/dev/null || true ;;
+    direct) svc_log_tail 60 ;;
     docker) compose logs --tail 60 --no-color 2>/dev/null || true ;;
   esac
 }
@@ -688,8 +748,56 @@ EOF
   chmod 644 "$UNIT_FILE"
 }
 
+# OpenRC has no capability setting in its service script: when unprivileged ICMP is not allowed for the service account
+# (net.ipv4.ping_group_range), the binary itself gets CAP_NET_RAW as a file capability. Needed again for every new binary.
+grant_icmp() {
+  [ "$(init_system)" = openrc ] || return 0
+  if service_group_can_ping; then return 0; fi
+  warn "net.ipv4.ping_group_range does not include ${RUN_USER}; giving the binary CAP_NET_RAW only"
+  command_exists setcap || run "Installing setcap (libcap-utils)" apk add --no-cache libcap-utils
+  setcap cap_net_raw+ep "$1" || warn "Could not give the binary CAP_NET_RAW: ping checks will not work. Allow ${RUN_USER}'s group in net.ipv4.ping_group_range, or use --mode docker."
+}
+
+write_openrc_files() {
+  {
+    echo "# Written by ipping-node.sh"
+    echo "export IPPING_NODE_STATE_DIR=\"${STATE_DIR}\""
+    if [ "$ALLOW_INSECURE" -ne 0 ]; then echo "export IPPING_NODE_ALLOW_INSECURE=1"; fi
+  } >"$OPENRC_CONF"
+  chmod 644 "$OPENRC_CONF"
+  cat >"$OPENRC_SCRIPT" <<EOF
+#!/sbin/openrc-run
+# Written by ipping-node.sh. The environment is in ${OPENRC_CONF}.
+description="ipping measurement node"
+command="${APP_DIR}/current/ipping-node"
+command_args="run"
+command_user="${RUN_USER}:${RUN_USER}"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_log="${LOG_FILE}"
+error_log="${LOG_FILE}"
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --mode 0700 --owner ${RUN_USER}:${RUN_USER} "${STATE_DIR}"
+	checkpath --file --mode 0640 --owner ${RUN_USER}:${RUN_USER} "${LOG_FILE}"
+}
+EOF
+  chmod 755 "$OPENRC_SCRIPT"
+}
+
 install_direct_mode() {
-  command_exists systemctl || die "--mode direct needs systemd. Use --mode docker on this host."
+  local init; init="$(init_system)"
+  if [ "$init" = openrc ]; then
+    command_exists rc-service || die "--mode direct on Alpine needs OpenRC (rc-service). Use --mode docker on this host."
+  else
+    command_exists systemctl || die "--mode direct needs systemd (or OpenRC on Alpine). Use --mode docker on this host."
+  fi
   command_exists curl || die "curl is required."
   command_exists sha256sum || die "sha256sum is required (coreutils)."
 
@@ -699,7 +807,12 @@ install_direct_mode() {
 
   step "Preparing this machine"
   if ! id "$RUN_USER" >/dev/null 2>&1; then
-    useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
+    if command_exists useradd; then
+      useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
+    else
+      addgroup -S "$RUN_USER" 2>/dev/null || true
+      adduser -S -D -H -h "$STATE_DIR" -s /sbin/nologin -G "$RUN_USER" "$RUN_USER"
+    fi
   fi
   install -d -m 0755 "$APP_DIR"
   install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "$STATE_DIR"
@@ -721,7 +834,13 @@ install_direct_mode() {
     download_verified_binary "$tag" "${releases_dir}/ipping-node"
   fi
   binary="${releases_dir}/ipping-node"
-  "$binary" --version >/dev/null || die "The downloaded binary does not run on this host."
+  if ! "$binary" --version >/dev/null 2>&1; then
+    if [ "$init" = openrc ]; then
+      die "The downloaded binary does not run on this host. The release binaries are built for glibc and run on Alpine through gcompat (installed here); if that is not enough, use --mode docker."
+    fi
+    die "The downloaded binary does not run on this host."
+  fi
+  grant_icmp "$binary"
 
   ln -sfn "$releases_dir" "${APP_DIR}/current"
   ln -sfn "${APP_DIR}/current/ipping-node" "$BIN_LINK"
@@ -734,17 +853,22 @@ install_direct_mode() {
     if [ -n "$CITY" ]; then enroll_env+=("IPPING_NODE_CITY=${CITY}"); fi
     if [ -n "$PROVIDER" ]; then enroll_env+=("IPPING_NODE_PROVIDER=${PROVIDER}"); fi
     if [ "$ALLOW_INSECURE" -ne 0 ]; then enroll_env+=("IPPING_NODE_ALLOW_INSECURE=1"); fi
-    run "Enrolling this node" runuser -u "$RUN_USER" -- env "${enroll_env[@]}" "$binary" --state-dir "$STATE_DIR" enroll
+    run "Enrolling this node" as_service_user env "${enroll_env[@]}" "$binary" --state-dir "$STATE_DIR" enroll
   fi
 
   step "Starting the service"
-  write_unit_file
-  systemctl daemon-reload
-  run "Enabling the service at boot" systemctl enable "$SERVICE"
-  run "Starting the service" systemctl restart "$SERVICE"
+  if [ "$init" = openrc ]; then
+    write_openrc_files
+    run "Enabling the service at boot" rc-update add "$SERVICE" default
+  else
+    write_unit_file
+    systemctl daemon-reload
+    run "Enabling the service at boot" systemctl enable "$SERVICE"
+  fi
+  run "Starting the service" svc_restart
   echo direct >"$MODE_FILE"   # only now is it "installed": a failure before this can simply be retried
   run_soft "Checking that it stays up" wait_for_active 5 \
-    || { journalctl -u "$SERVICE" --no-pager -n 20 2>/dev/null || true; die "The service did not start. See the log above (journalctl -u ${SERVICE})."; }
+    || { svc_log_tail 20; die "The service did not start. See the log above ($(svc_log_hint))."; }
   finish_message
 }
 
@@ -760,7 +884,7 @@ wait_for_active() { # wait_for_active SECONDS: the service must be active for th
   local i
   for ((i = 0; i < $1; i++)); do
     sleep 1
-    systemctl is-active --quiet "$SERVICE" || return 1
+    svc_active || return 1
   done
 }
 
@@ -800,7 +924,7 @@ finish_message() {
 
 cmd_start() {
   case "$(require_mode)" in
-    direct) run "Starting the node" systemctl start "$SERVICE" ;;
+    direct) run "Starting the node" svc_start ;;
     docker) run "Starting the node" compose up -d ;;
   esac
   ok "The node is started."
@@ -808,7 +932,7 @@ cmd_start() {
 
 cmd_stop() {
   case "$(require_mode)" in
-    direct) run "Stopping the node" systemctl stop "$SERVICE" ;;
+    direct) run "Stopping the node" svc_stop ;;
     docker) run "Stopping the node" compose stop ;;
   esac
   ok "The node is stopped. Its identity is kept; 'start' brings it back."
@@ -816,7 +940,7 @@ cmd_stop() {
 
 cmd_restart() {
   case "$(require_mode)" in
-    direct) run "Restarting the node" systemctl restart "$SERVICE" ;;
+    direct) run "Restarting the node" svc_restart ;;
     docker) run "Restarting the node" compose restart ;;
   esac
   ok "The node is restarted."
@@ -824,7 +948,7 @@ cmd_restart() {
 
 node_running() {
   case "$(installed_mode)" in
-    direct) systemctl is-active --quiet "$SERVICE" ;;
+    direct) svc_active ;;
     docker) [ -n "$(compose ps --status running --quiet 2>/dev/null)" ] ;;
     *) return 1 ;;
   esac
@@ -862,7 +986,7 @@ cmd_status() {
 
 cmd_logs() {
   case "$(require_mode)" in
-    direct) journalctl -u "$SERVICE" -f --no-pager -n 100 ;;
+    direct) svc_log_follow ;;
     docker) compose logs -f --tail 100 ;;
   esac
 }
@@ -898,11 +1022,12 @@ cmd_update() {
   step "Switching to ${tag}"
   ln -sfn "$releases_dir" "${APP_DIR}/current"
   fix_state_ownership
-  run "Restarting the service" systemctl restart "$SERVICE"
+  grant_icmp "${releases_dir}/ipping-node"
+  run "Restarting the service" svc_restart
   if ! run_soft "Checking that the new version stays up" wait_for_active 5; then
     warn "The new version did not start; rolling back."
     if [ -n "$previous" ]; then ln -sfn "$previous" "${APP_DIR}/current"; fi
-    systemctl restart "$SERVICE" || true
+    svc_restart || true
     die "Update to ${tag} failed and was rolled back."
   fi
   ok "Updated to ${tag}. Previous releases stay in ${APP_DIR}/releases for rollback."
@@ -933,6 +1058,8 @@ cmd_doctor() {
     check "the credential file is private (mode 600)" "sudo chmod 600 ${STATE_DIR}/credential" bash -c "[ \"\$(stat -c %a '${STATE_DIR}/credential')\" = 600 ]"
     if service_group_can_ping; then
       check "unprivileged ICMP is allowed (ping_group_range)" "" true
+    elif [ "$(init_system)" = openrc ]; then
+      check "the binary has CAP_NET_RAW for ICMP" "run update, or reinstall the node" bash -c "getcap '${APP_DIR}/current/ipping-node' 2>/dev/null | grep -qi cap_net_raw"
     else
       check "the service has CAP_NET_RAW for ICMP" "reinstall the node" grep -q CAP_NET_RAW "$UNIT_FILE"
     fi
@@ -959,15 +1086,24 @@ cmd_uninstall() {
   if [ "$mode" = "docker" ]; then
     if [ "$PURGE" -eq 1 ]; then run "Removing the container and its state" compose down -v; else run "Removing the container" compose down; fi
   else
-    systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
-    rm -f "$UNIT_FILE" "$BIN_LINK"
-    systemctl daemon-reload
+    if [ "$(init_system)" = openrc ]; then
+      rc-service "$SERVICE" stop >/dev/null 2>&1 || true
+      rc-update del "$SERVICE" default >/dev/null 2>&1 || true
+      rm -f "$OPENRC_SCRIPT" "$OPENRC_CONF" "$BIN_LINK"
+    else
+      systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+      rm -f "$UNIT_FILE" "$BIN_LINK"
+      systemctl daemon-reload
+    fi
     rm -rf "${APP_DIR}/releases" "${APP_DIR}/current"
   fi
   rm -f "$MODE_FILE"
   if [ "$PURGE" -eq 1 ]; then
     rm -rf "$STATE_DIR" "$APP_DIR"
-    if id "$RUN_USER" >/dev/null 2>&1; then userdel "$RUN_USER" 2>/dev/null || true; fi
+    rm -f "$LOG_FILE"
+    if id "$RUN_USER" >/dev/null 2>&1; then
+      if command_exists userdel; then userdel "$RUN_USER" 2>/dev/null || true; else deluser "$RUN_USER" 2>/dev/null || true; fi
+    fi
     ok "Removed, including the node's credential."
   else
     ok "Removed. The node's identity (${STATE_DIR} / the state volume) was kept so reinstalling reuses it; add --purge to delete it."
@@ -990,7 +1126,7 @@ Commands:
   uninstall    Remove it (state is kept unless --purge)
 
 Options:
-  --mode direct|docker     direct: systemd service, no Docker. docker: container, no Rust or Python needed.
+  --mode direct|docker     direct: systemd service (OpenRC on Alpine), no Docker. docker: container, no Rust or Python needed.
   --server URL             Where your ipping site is, e.g. https://ping.example.com
                            Run without options for a guided install.
   --token TOKEN            Single-use enrollment token from the admin page (or IPPING_NODE_ENROLL_TOKEN)
@@ -1067,11 +1203,12 @@ cmd_install() {
   if [ -f "${STATE_DIR}/credential" ]; then enrolled=yes; fi
   if is_interactive && [ -z "$MODE" ]; then
     choose pick "How should the node run on this machine?" 1 \
-      "Directly on this machine (recommended)|A small program run by systemd. Nothing else to install." \
+      "Directly on this machine (recommended)|A small program run by $(service_manager_name). Nothing else to install." \
       "Docker|A hardened container. Docker is installed for you if it is missing."
     case "$pick" in 1) MODE=direct ;; *) MODE=docker ;; esac
   fi
   case "$MODE" in direct | docker) ;; *) die "Choose how to run it with --mode direct or --mode docker." ;; esac
+  if [ "$(init_system)" = openrc ]; then prepare_alpine "$MODE"; fi
   if [ "$enrolled" = yes ] && [ "$MODE" = direct ]; then
     note "This node is already enrolled; it keeps its identity."
     SERVER="$(node_server_from_state)"
@@ -1086,7 +1223,7 @@ cmd_install() {
   if is_interactive; then
     box "Ready to install" \
       "" \
-      "Mode      $( [ "$MODE" = docker ] && echo "Docker" || echo "Directly on this machine (systemd)" )" \
+      "Mode      $( [ "$MODE" = docker ] && echo "Docker" || echo "Directly on this machine ($(service_manager_name))" )" \
       "Site      ${SERVER:-kept from the earlier install}" \
       "Node      ${NAME:-$(hostname)}" \
       "Location  ${CITY:+${CITY}, }${COUNTRY:-not set}" \
