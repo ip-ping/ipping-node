@@ -2,6 +2,18 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## v0.8.0 (2026-11-11)
+
+A node needs no name. It no longer sends its host name when none is given, and the installer's question is optional.
+
+- `ipping-node enroll` sends an empty name when `--name` / `IPPING_NODE_NAME` is not set (it used to send `HOSTNAME`, `/etc/hostname`
+  or `ipping-node`). Backend v0.10.0 then calls the node after its place and its network, for example `Sydney, AU - OVH SAS · AS16276`;
+  an older backend refuses an empty name, so give `--name` there.
+- `ipping-node.sh`: "What should this node be called?" has no default and may be left empty (it used to propose the host name), the
+  summary says "named after its place and network" in that case, the enrollment question says the token is single-use unless the
+  administrator made it reusable, and `--help` and the README say so. Nodes that already have a name keep it.
+- Tests: the installer tests (all pass), ShellCheck stable and 0.10.0, `cargo fmt`, `clippy` and the unit tests are clean.
+
 ## v0.7.2 (2026-11-10)
 
 The node runs on Alpine Linux: the release now carries **static musl binaries**, and the installer picks them there.

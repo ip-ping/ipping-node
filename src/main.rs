@@ -47,7 +47,7 @@ struct EnrollArgs {
     /// Enrollment token created in the admin page
     #[arg(long, env = "IPPING_NODE_ENROLL_TOKEN", hide_env_values = true)]
     token: String,
-    /// Display name for this node
+    /// Name for this node (optional: without one the site calls it after its place and network)
     #[arg(long, env = "IPPING_NODE_NAME")]
     name: Option<String>,
     /// Two-letter country code
@@ -115,22 +115,10 @@ fn set(value: Option<String>) -> Option<String> {
     value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
-fn default_name() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|h| h.trim().to_owned())
-        })
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "ipping-node".to_owned())
-}
-
 async fn do_enroll(state: &StateDir, args: EnrollArgs) -> Result<(), String> {
     let details = Details {
-        name: set(args.name).unwrap_or_else(default_name),
+        // No name is a choice: the site then calls the node after its place and its network (City, CC - Provider · ASn).
+        name: set(args.name).unwrap_or_default(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         country: set(args.country),
         region: set(args.region),

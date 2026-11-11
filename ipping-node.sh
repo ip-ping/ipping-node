@@ -610,7 +610,7 @@ valid_server() {
 
 valid_country() { [ -z "$1" ] || [[ $1 =~ ^[A-Za-z]{2}$ ]]; }
 
-valid_node_name() { [ -n "$1" ] && [ "${#1}" -le 100 ]; }
+valid_node_name() { [ "${#1}" -le 100 ]; }  # empty is fine: the site names the node after its place and network
 
 is_local_address() {
   case "${1#*://}" in localhost | localhost:* | 127.* | "[::1]"*) return 0 ;; *) return 1 ;; esac
@@ -636,9 +636,9 @@ enrollment_questions() {
       die "${SERVER} uses plain HTTP, which would send this node's credential unencrypted. Use https://, or add --allow-insecure."
     fi
   fi
-  prompt_secret TOKEN "Enrollment token" "Create one in the admin page: Admin > Enrollment > Create enrollment token. It works once and then expires."
-  prompt NAME "What should this node be called?" "$(hostname)" valid_node_name "Shown on the public node list and in results."
-  NAME="${NAME:-$(hostname)}"
+  prompt_secret TOKEN "Enrollment token" "Create one in the admin page: Admin > Enrollment > Create enrollment token. It works once and then expires, unless it was made reusable."
+  prompt NAME "What should this node be called? (leave empty to name it after its place and network)" "" valid_node_name \
+    "Optional. Empty: the site calls it after where it is and whose network it is, for example 'Sydney, AU - OVH SAS · AS16276'."
   prompt COUNTRY "Which country is this node in? (two letters, for example DE)" "" valid_country \
     "Optional. An administrator can correct it later; results are placed on a map from it."
   prompt CITY "Which city?" "" "" "Optional."
@@ -915,7 +915,7 @@ finish_message() {
   box "ipping-node is running" \
     "" \
     "Site     ${server:-${SERVER}}" \
-    "Node     ${NAME:-$(hostname)}" \
+    "Node     ${NAME:-named after its place and network}" \
     "Status   $(node_approval)" \
     ""
   case "$(node_approval)" in
@@ -1140,8 +1140,9 @@ Options:
   --mode direct|docker     direct: systemd service (OpenRC on Alpine), no Docker. docker: container, no Rust or Python needed.
   --server URL             Where your ipping site is, e.g. https://ping.example.com
                            Run without options for a guided install.
-  --token TOKEN            Single-use enrollment token from the admin page (or IPPING_NODE_ENROLL_TOKEN)
-  --name NAME  --country CC  --city CITY  --provider NAME     What the public node list shows
+  --token TOKEN            Enrollment token from the admin page (or IPPING_NODE_ENROLL_TOKEN)
+  --name NAME  --country CC  --city CITY  --provider NAME     What the public node list shows (no --name: the node is called
+                           after its place and network)
   --version vX.Y.Z         Release to install (default: latest)
   --binary FILE            Install this binary instead of downloading a release (direct mode)
   --allow-insecure         (or --insecure) Permit a plain http:// backend on another host. The node's credential is then
@@ -1236,7 +1237,7 @@ cmd_install() {
       "" \
       "Mode      $( [ "$MODE" = docker ] && echo "Docker" || echo "Directly on this machine ($(service_manager_name))" )" \
       "Site      ${SERVER:-kept from the earlier install}" \
-      "Node      ${NAME:-$(hostname)}" \
+      "Node      ${NAME:-named after its place and network}" \
       "Location  ${CITY:+${CITY}, }${COUNTRY:-not set}" \
       "Release   ${VERSION:-latest}" \
       ""

@@ -103,8 +103,8 @@ for containers).
 |---|---|---|
 | `--state-dir DIR` | `IPPING_NODE_STATE_DIR` | where the identity lives (default `/var/lib/ipping-node`) |
 | `--server URL` | `IPPING_NODE_SERVER` | the backend (for `run`, overrides the one saved at enrollment) |
-| `--token T` | `IPPING_NODE_ENROLL_TOKEN` | the single-use enrollment token |
-| `--name`, `--country`, `--city`, `--region`, `--provider`, `--latitude`, `--longitude`, `--asn` | `IPPING_NODE_NAME`, `..._COUNTRY`, ... | what the node tells the site about itself (coordinates feed the location estimate) |
+| `--token T` | `IPPING_NODE_ENROLL_TOKEN` | the enrollment token (single-use, unless the administrator made it reusable) |
+| `--name`, `--country`, `--city`, `--region`, `--provider`, `--latitude`, `--longitude`, `--asn` | `IPPING_NODE_NAME`, `..._COUNTRY`, ... | what the node tells the site about itself (coordinates feed the location estimate). **No name is fine** (and what the installer's guided install proposes): the site then calls the node after where it is and whose network it is, `City, CC - Provider · ASn`, for example `Sydney, AU - OVH SAS · AS16276`, and an administrator can still give it a name |
 | `--insecure` (`--allow-insecure`) | `IPPING_NODE_ALLOW_INSECURE=1` | allow plain `http://` to a backend on another host |
 | `--ports LIST` | `IPPING_NODE_PORTS` | destination ports for TCP and HTTP (a comma-separated list, or `any`) |
 | `--max-tasks N` | `IPPING_NODE_MAX_TASKS` | most tasks at once (default 8, and never above what the backend allows) |
