@@ -5,7 +5,7 @@ A node is a small Rust program: it connects *out* to the backend, receives typed
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
 connect, HTTP request, traceroute, DNS lookup, certificate check**) and reports structured results.
 
-Current release: **v0.6.0**. It works with any backend for ping; TCP, HTTP and traceroute need backend
+Current release: **v0.8.1**. It works with any backend for ping; TCP, HTTP and traceroute need backend
 **v0.3.0** or newer, DNS checks need backend **v0.4.0**, traceroute rounds and certificate checks need backend **v0.5.0**, and DNS over HTTPS and QUIC need backend **v0.6.0** (DNS over HTTPS to Quad9, **v0.7.0**). Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 
@@ -75,6 +75,14 @@ release has none and the installer says so). If `ipping-node.sh` is started with
 again. OpenRC has no capability setting, so if the service account cannot send unprivileged pings the binary gets
 `CAP_NET_RAW` as a file capability (`libcap-utils`). `--mode docker` also works on Alpine (Docker from `apk`).
 
+**Alpine in an LXC container** is the usual case for that file capability: the container's `net.ipv4.ping_group_range` is
+`1 0` (nobody) and cannot be changed from inside, because LXC mounts `/proc/sys` read-only. Nothing needs to be done on the host:
+the node runs as its unprivileged user with `CAP_NET_RAW` on the binary and does **ping and traceroute** through raw sockets
+(traceroute needs v0.8.1 or newer; older nodes of this kind ping but do not offer traceroute). The installer does this by itself;
+`update` repeats it for every new binary. The node's log says what it offers when it connects
+(`kinds=ping,tcp,http,tls,dns,traceroute`) and, when it cannot offer traceroute, why. If you do run the LXC host, allowing the group in
+`net.ipv4.ping_group_range` instead is also fine: the node prefers ping sockets whenever it may have them.
+
 ## Run it
 
 ```bash
@@ -111,7 +119,8 @@ for containers).
 | | `IPPING_NODE_LOG` | log filter (default `info`) |
 
 ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that means
-`net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`.
+`net.ipv4.ping_group_range` must include the node's group; otherwise grant `CAP_NET_RAW`, and ping and traceroute use raw
+sockets instead (traceroute from v0.8.1; before that it needed the ping sockets and was not offered with `CAP_NET_RAW` alone).
 
 ### What it measures
 
@@ -119,7 +128,7 @@ ICMP uses unprivileged ping sockets where the kernel allows them. On Linux that 
 | --- | --- | --- |
 | `ping` | an ICMP echo | 1 to 10 per task, 56-byte payload, public addresses only |
 | `tcp` | opening a connection, then closing it with no data | ports from an allowlist (`--ports` / `IPPING_NODE_PORTS`, a list or `any`), public addresses only |
-| `traceroute` | one hop (three probes, or more with `count` above one) | Linux only; up to 30 hops; hop addresses that are not public are reported as "private" without the address. With `count` rounds the trace is repeated like `mtr`: one probe per hop and round, `interval_ms` apart, and each hop is reported once with every reply and how many probes it got |
+| `traceroute` | one hop (three probes, or more with `count` above one) | Linux only (ping sockets, or raw sockets with `CAP_NET_RAW`); up to 30 hops; hop addresses that are not public are reported as "private" without the address. With `count` rounds the trace is repeated like `mtr`: one probe per hop and round, `interval_ms` apart, and each hop is reported once with every reply and how many probes it got |
 | `dns` | one question to one resolver, answered in full | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`; the resolver is a public one the backend names (port 53) or this node's own (`/etc/resolv.conf`); `transport` `doh` asks over HTTPS instead (RFC 8484 GET on port 443, the certificate checked for the resolver's name; Cloudflare, Google and Quad9 work; the node offers `h2` and speaks HTTP/2 when the server picks it, which Quad9 needs); names that are internal (`.lan`, `.corp`, single labels ...) are refused; from the node's own resolver, private addresses in an answer are counted but never reported |
 | `tls` | one TLS handshake with no request after it (`transport` `quic`: a QUIC handshake over UDP offering `h3`, the transport of HTTP/3) | same ports as TCP; the certificate is checked against the Mozilla roots for the name presented (or the address, for a bare address) and a certificate that does not verify is still described, with the reason; it reports the version, cipher, subject, issuer, validity, up to 24 names the certificate is valid for and how many certificates the server sent |
 | `http` | one `GET`, headers only | same ports; redirects (at most 5, only if asked) are re-checked at every hop; a certificate that does not verify is described but never sent a request |
@@ -173,7 +182,9 @@ you whether the site has approved the node. Common cases:
   makes it wait the full minute; a 502 from the proxy while the backend restarts does not.
 * **Ping or traceroute fails with a permission error**: the node's group must be in
   `net.ipv4.ping_group_range` (the installer checks this and adds `CAP_NET_RAW` only if it must).
-  Traceroute is Linux only and is not advertised where it cannot work.
+  Traceroute is Linux only and is not advertised where it cannot work: the node's log line `connected ... kinds=...` lists what it
+  offers, and a `traceroute is not offered: ...` line before it says why. Before v0.8.1 a node that had only `CAP_NET_RAW`
+  (an Alpine or other LXC container, a host that keeps `ping_group_range` closed) pinged but never offered traceroute: update it.
 
 ## Develop
 
@@ -231,6 +242,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] TCP connect checks
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
+- [x] Traceroute through a raw socket where only `CAP_NET_RAW` is allowed (an LXC container), tested in the same lab with ping sockets refused, and on Alpine as an unprivileged user with the file capability (v0.8.1)
 - [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1, v0.6.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [x] Every kind over IPv6 with global addresses and the real policy, in a network-namespace lab (node CI); see the node README for what that does and does not prove
 - [ ] Over the real public IPv6 internet (needs a host with IPv6 connectivity; neither the development machine nor CI runners have it)

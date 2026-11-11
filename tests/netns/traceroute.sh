@@ -6,6 +6,7 @@
 # Needs root (or CAP_SYS_ADMIN) and iproute2. Used by CI and by hand:
 #
 #   sudo tests/netns/traceroute.sh
+#   sudo TRACEROUTE_TEST_RAW=1 tests/netns/traceroute.sh     # with ping sockets refused: raw sockets only
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -61,8 +62,15 @@ for ns in "$NS_R1" "$NS_R2"; do
   ip netns exec "$ns" sysctl -qw net.ipv4.icmp_ratelimit=0 net.ipv6.icmp.ratelimit=0 \
     net.ipv4.icmp_msgs_per_sec=100000 net.ipv4.icmp_msgs_burst=100000
 done
-# The test user must be allowed to open ping sockets (what `ping` itself relies on).
-ip netns exec "$NS_SRC" sysctl -qw net.ipv4.ping_group_range="0 2147483647"
+# The test user must be allowed to open ping sockets (what `ping` itself relies on), unless
+# TRACEROUTE_TEST_RAW is set: then the lab is a host that keeps ping sockets from this user (an LXC
+# container whose ping_group_range cannot be changed) and root's CAP_NET_RAW is all that is left,
+# so every probe has to go through a raw socket.
+if [ -n "${TRACEROUTE_TEST_RAW:-}" ]; then
+  ip netns exec "$NS_SRC" sysctl -qw net.ipv4.ping_group_range="1 0"
+else
+  ip netns exec "$NS_SRC" sysctl -qw net.ipv4.ping_group_range="0 2147483647"
+fi
 
 # Resolve every neighbour once, so the first probes are not delayed by neighbour discovery (which
 # says nothing about traceroute). `ping` here is only a way to make that happen.
@@ -79,9 +87,9 @@ fi
 
 run() { # run <destination> <routers>
   echo "== tracing $1"
-  ip netns exec "$NS_SRC" env IPPING_TRACE_DEST="$1" IPPING_TRACE_HOPS="$2" \
+  ip netns exec "$NS_SRC" env IPPING_TRACE_DEST="$1" IPPING_TRACE_HOPS="$2" IPPING_TRACE_RAW="${TRACEROUTE_TEST_RAW:-}" \
     "$BIN" through_real_routers --nocapture --test-threads=1
 }
 run 10.0.3.2 10.0.1.2,10.0.2.2
 run fd00:3::2 fd00:1::2,fd00:2::2
-echo "traceroute works through real routers (IPv4 and IPv6)"
+echo "traceroute works through real routers (IPv4 and IPv6)${TRACEROUTE_TEST_RAW:+, through a raw socket}"

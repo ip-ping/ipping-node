@@ -6,6 +6,12 @@
 //! the socket's *error queue* together with the router's address, so no raw socket is needed. If the
 //! packet reaches the destination, the echo reply arrives as normal data.
 //!
+//! Where the host does not let this user have ping sockets (a container whose `ping_group_range`
+//! cannot be changed, an LXC for one) but the node holds `CAP_NET_RAW`, which is what the installer
+//! falls back to for ping, a **raw ICMP socket** does the same job: the probe is built by hand with a
+//! random identifier, and every ICMP message that arrives is looked at until one answers it (an echo
+//! reply, or a time exceeded / unreachable that quotes our packet).
+//!
 //! Each probe is its own socket, so answers can never be mixed up between probes. The wait is a
 //! blocking `poll(2)` and runs on tokio's blocking pool.
 
@@ -32,8 +38,13 @@ pub enum HopOutcome {
     Failed(&'static str),
 }
 
-/// Can this host send traceroute probes over this IP version?
+/// Can this host send traceroute probes over this IP version, with a ping socket or a raw one?
 pub fn available(v6: bool) -> bool {
+    unprivileged_available(v6) || raw_available(v6)
+}
+
+/// Can this user open an unprivileged ICMP socket that reports errors (`net.ipv4.ping_group_range`)?
+pub fn unprivileged_available(v6: bool) -> bool {
     #[cfg(target_os = "linux")]
     {
         linux::socket(v6).is_ok()
@@ -45,7 +56,57 @@ pub fn available(v6: bool) -> bool {
     }
 }
 
-/// Send one echo request to `ip` with this TTL and wait for an answer. Blocks the calling thread.
+/// Can this process open a raw ICMP socket (it holds `CAP_NET_RAW`)?
+pub fn raw_available(v6: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::raw_socket(v6).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = v6;
+        false
+    }
+}
+
+/// Why this host offers no traceroute, in a sentence an operator can act on, or `None` when it does.
+pub fn why_unavailable() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        if available(false) || available(true) {
+            return None;
+        }
+        let ping = linux::socket(false).err().map(|e| e.to_string());
+        let raw = linux::raw_socket(false).err().map(|e| e.to_string());
+        Some(format!(
+            "no ICMP socket is allowed for this user: an unprivileged one needs its group inside \
+             net.ipv4.ping_group_range ({}), a raw one needs CAP_NET_RAW ({})",
+            ping.unwrap_or_default(),
+            raw.unwrap_or_default()
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Some("traceroute needs Linux".to_owned())
+    }
+}
+
+/// The same probe through a raw ICMP socket, whatever `ping_group_range` says: for where a ping socket
+/// is refused, and for tests. Needs `CAP_NET_RAW`. Blocks the calling thread.
+pub fn probe_raw(ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
+    #[cfg(target_os = "linux")]
+    {
+        linux::probe_raw(ip, ttl, seq, timeout)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (ip, ttl, seq, timeout);
+        HopOutcome::Failed(error_code::UNSUPPORTED_KIND)
+    }
+}
+
+/// Send one echo request to `ip` with this TTL and wait for an answer: through an unprivileged ICMP
+/// socket, or through a raw one where the first is refused. Blocks the calling thread.
 pub fn probe(ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
     #[cfg(target_os = "linux")]
     {
@@ -132,11 +193,20 @@ mod linux {
     }
 
     pub fn probe(ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
+        match socket(ip.is_ipv6()) {
+            Ok(socket) => probe_on(&socket, ip, ttl, seq, timeout),
+            // The host does not let this user have ping sockets: a raw socket may still be allowed.
+            Err(error) if is_denied(&error) => probe_raw(ip, ttl, seq, timeout),
+            Err(error) => HopOutcome::Failed(code_for(&error)),
+        }
+    }
+
+    fn is_denied(error: &io::Error) -> bool {
+        matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM))
+    }
+
+    fn probe_on(socket: &Socket, ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
         let v6 = ip.is_ipv6();
-        let socket = match socket(v6) {
-            Ok(socket) => socket,
-            Err(error) => return HopOutcome::Failed(code_for(&error)),
-        };
         let set_ttl = if v6 {
             socket.set_unicast_hops_v6(u32::from(ttl))
         } else {
@@ -187,7 +257,7 @@ mod linux {
             let elapsed = sent.elapsed();
 
             if fd.revents & libc::POLLERR != 0 {
-                match read_error(&socket, v6) {
+                match read_error(socket, v6) {
                     QueueEntry::Hop { from, terminal } => {
                         return HopOutcome::Reply {
                             from,
@@ -359,6 +429,390 @@ mod linux {
                 })
             }
             _ => QueueEntry::Nothing,
+        }
+    }
+
+    // ---- Through a raw ICMP socket (CAP_NET_RAW) -------------------------------------------------
+
+    // From <linux/icmp.h> and <linux/icmpv6.h>: the receive filters of raw ICMP sockets, which are not
+    // in the libc crate. A set bit in the mask means "drop this type".
+    const SOL_RAW: libc::c_int = 255;
+    const ICMP_FILTER: libc::c_int = 1;
+    const SOL_ICMPV6: libc::c_int = 58;
+    const ICMPV6_FILTER: libc::c_int = 1;
+
+    /// A raw ICMP socket for this IP version. Needs `CAP_NET_RAW`.
+    pub fn raw_socket(v6: bool) -> io::Result<Socket> {
+        let (domain, protocol) = if v6 {
+            (Domain::IPV6, Protocol::ICMPV6)
+        } else {
+            (Domain::IPV4, Protocol::ICMPV4)
+        };
+        let socket = Socket::new(domain, Type::RAW, Some(protocol))?;
+        // A raw socket is handed every ICMP message the host receives; only the three kinds that can
+        // answer a probe are wanted. Not being able to say so is no reason to give up: the answers
+        // are matched one by one anyway.
+        if v6 {
+            let mut mask = [u32::MAX; 8];
+            for kind in [ICMP6_DST_UNREACH, ICMP6_TIME_EXCEEDED, ECHO_REPLY_V6] {
+                mask[usize::from(kind >> 5)] &= !(1u32 << (kind & 31));
+            }
+            set_option(&socket, SOL_ICMPV6, ICMPV6_FILTER, &mask);
+        } else {
+            let wanted =
+                (1u32 << ECHO_REPLY_V4) | (1 << ICMP_DEST_UNREACH) | (1 << ICMP_TIME_EXCEEDED);
+            set_option(&socket, SOL_RAW, ICMP_FILTER, &!wanted);
+        }
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    }
+
+    fn set_option<T>(socket: &Socket, level: libc::c_int, name: libc::c_int, value: &T) {
+        // SAFETY: the descriptor is a live socket owned by `socket`, and the pointer and length
+        // describe one `T` that outlives the call. The result is ignored on purpose (see the caller).
+        unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                level,
+                name,
+                std::ptr::from_ref(value).cast(),
+                size_of::<T>() as libc::socklen_t,
+            );
+        }
+    }
+
+    /// The Internet checksum (RFC 1071) of `data`.
+    fn checksum(data: &[u8]) -> u16 {
+        let mut sum: u32 = data
+            .chunks(2)
+            .map(|pair| u32::from(u16::from_be_bytes([pair[0], *pair.get(1).unwrap_or(&0)])))
+            .sum();
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !u16::try_from(sum).unwrap_or(0xffff)
+    }
+
+    /// What an ICMP message that reached a raw socket says about our probe.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Answer {
+        /// The destination's echo reply.
+        Reached,
+        /// A router's time exceeded, or (`terminal`) its "unreachable".
+        Hop { terminal: bool },
+    }
+
+    /// Does `data`, as `recv` gave it, answer the probe with this identifier and sequence number?
+    /// On IPv4 `data` is the whole IP packet; on IPv6 it is the ICMPv6 message alone. An error message
+    /// quotes the start of the packet it is about, which is where our identifier is found. Anything
+    /// else (someone else's ping, a different probe of ours) is `None`.
+    fn answer(v6: bool, data: &[u8], ident: u16, seq: u16) -> Option<Answer> {
+        let icmp = if v6 {
+            data
+        } else {
+            data.get(usize::from(*data.first()? & 0x0f) * 4..)?
+        };
+        let (request, reply, time_exceeded, unreachable) = if v6 {
+            (
+                ECHO_REQUEST_V6,
+                ECHO_REPLY_V6,
+                ICMP6_TIME_EXCEEDED,
+                ICMP6_DST_UNREACH,
+            )
+        } else {
+            (
+                ECHO_REQUEST_V4,
+                ECHO_REPLY_V4,
+                ICMP_TIME_EXCEEDED,
+                ICMP_DEST_UNREACH,
+            )
+        };
+        let ours = |echo: &[u8], kind: u8| {
+            echo.len() >= 8
+                && echo[0] == kind
+                && echo[4..6] == ident.to_be_bytes()
+                && echo[6..8] == seq.to_be_bytes()
+        };
+        let kind = *icmp.first()?;
+        if kind == reply {
+            return ours(icmp, reply).then_some(Answer::Reached);
+        }
+        if kind != time_exceeded && kind != unreachable {
+            return None;
+        }
+        // 8 bytes of error header, then the packet that caused it.
+        let quoted = icmp.get(8..)?;
+        let echo = if v6 {
+            // A fixed 40-byte header: our own probe carries no extension headers.
+            quoted.get(40..)?
+        } else {
+            let header = usize::from(*quoted.first()? & 0x0f) * 4;
+            quoted.get(header..)?
+        };
+        ours(echo, request).then_some(Answer::Hop {
+            terminal: kind == unreachable,
+        })
+    }
+
+    /// Wait until `fd` can be read or `wait` has passed: `Ok(true)` when it can.
+    fn readable(fd: i32, wait: Duration) -> io::Result<bool> {
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // Round up, so a wait never ends a millisecond early and busy-loops.
+        let wait_ms = i32::try_from(wait.as_millis() + 1).unwrap_or(i32::MAX);
+        // SAFETY: `poll` is one valid `pollfd` and the count says so.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, wait_ms) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            return if error.kind() == io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(error)
+            };
+        }
+        Ok(ready > 0)
+    }
+
+    pub fn probe_raw(ip: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> HopOutcome {
+        let v6 = ip.is_ipv6();
+        let socket = match raw_socket(v6) {
+            Ok(socket) => socket,
+            Err(error) => return HopOutcome::Failed(code_for(&error)),
+        };
+        let set_ttl = if v6 {
+            socket.set_unicast_hops_v6(u32::from(ttl))
+        } else {
+            socket.set_ttl_v4(u32::from(ttl))
+        };
+        if let Err(error) = set_ttl {
+            return HopOutcome::Failed(code_for(&error));
+        }
+
+        // Ours to fill in, unlike a ping socket's: the identifier tells our probe from everyone
+        // else's ICMP, so it is random for each probe. The kernel adds the checksum of an ICMPv6
+        // message on a raw socket, but not of an ICMPv4 one.
+        let ident: u16 = rand::random();
+        let mut packet = [0x69u8; PACKET_LEN];
+        packet[..8].fill(0);
+        packet[0] = if v6 { ECHO_REQUEST_V6 } else { ECHO_REQUEST_V4 };
+        packet[4..6].copy_from_slice(&ident.to_be_bytes());
+        packet[6..8].copy_from_slice(&seq.to_be_bytes());
+        if !v6 {
+            let sum = checksum(&packet);
+            packet[2..4].copy_from_slice(&sum.to_be_bytes());
+        }
+        // `send_to`, not `connect`: a connected raw socket only receives from that address, and the
+        // routers' errors come from other ones.
+        let sent = Instant::now();
+        if let Err(error) = socket.send_to(&packet, &SockAddr::from(SocketAddr::new(ip, 0))) {
+            return HopOutcome::Failed(code_for(&error));
+        }
+
+        let deadline = sent + timeout;
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 1500];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return HopOutcome::Timeout;
+            }
+            match readable(socket.as_raw_fd(), remaining) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => return HopOutcome::Failed(code_for(&error)),
+            }
+            let elapsed = sent.elapsed();
+            // Everything that arrived is looked at, and only the answer to this probe ends the wait.
+            loop {
+                let (n, from) = match socket.recv_from(&mut buffer) {
+                    Ok(received) => received,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => return HopOutcome::Failed(code_for(&error)),
+                };
+                // SAFETY: `recv_from` initialised the first `n` bytes.
+                let data = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), n) };
+                match answer(v6, data, ident, seq) {
+                    Some(Answer::Reached) => {
+                        return HopOutcome::Reply {
+                            from: ip,
+                            rtt: elapsed,
+                            reached: true,
+                            terminal: false,
+                        };
+                    }
+                    Some(Answer::Hop { terminal }) => {
+                        if let Some(router) = from.as_socket() {
+                            return HopOutcome::Reply {
+                                from: router.ip(),
+                                rtt: elapsed,
+                                reached: false,
+                                terminal,
+                            };
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const IDENT: u16 = 0xbeef;
+        const SEQ: u16 = 7;
+
+        /// An echo request as we send it (ICMPv4 or ICMPv6), with this identifier.
+        fn request(v6: bool, ident: u16, seq: u16) -> Vec<u8> {
+            let mut packet = vec![0x69u8; PACKET_LEN];
+            packet[..8].fill(0);
+            packet[0] = if v6 { ECHO_REQUEST_V6 } else { ECHO_REQUEST_V4 };
+            packet[4..6].copy_from_slice(&ident.to_be_bytes());
+            packet[6..8].copy_from_slice(&seq.to_be_bytes());
+            packet
+        }
+
+        /// The IPv4 packet a router sends: its own 20-byte header, the ICMP error, and the start of ours.
+        fn v4_error(kind: u8, ident: u16, seq: u16) -> Vec<u8> {
+            let mut packet = vec![
+                0x45, 0, 0, 56, 0, 0, 0, 0, 64, 1, 0, 0, 10, 0, 0, 1, 10, 0, 0, 9,
+            ];
+            packet.extend([kind, 0, 0, 0, 0, 0, 0, 0]);
+            let mut quoted = vec![
+                0x45, 0, 0, 84, 0, 0, 0, 0, 1, 1, 0, 0, 10, 0, 0, 9, 8, 8, 8, 8,
+            ];
+            quoted.extend(&request(false, ident, seq)[..8]);
+            packet.extend(quoted);
+            packet
+        }
+
+        fn v6_error(kind: u8, ident: u16, seq: u16) -> Vec<u8> {
+            let mut message = vec![kind, 0, 0, 0, 0, 0, 0, 0];
+            let mut quoted = vec![0u8; 40];
+            quoted[0] = 0x60;
+            quoted[6] = 58;
+            message.extend(quoted);
+            message.extend(&request(true, ident, seq)[..8]);
+            message
+        }
+
+        #[test]
+        fn the_checksum_is_rfc_1071s() {
+            // The worked example of RFC 1071, section 3: the sum is 0xddf2, so the checksum is 0x220d.
+            assert_eq!(
+                checksum(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]),
+                0x220d
+            );
+            // With the checksum in place the whole thing sums to zero.
+            let mut packet = request(false, IDENT, SEQ);
+            let sum = checksum(&packet);
+            packet[2..4].copy_from_slice(&sum.to_be_bytes());
+            assert_eq!(checksum(&packet), 0);
+        }
+
+        #[test]
+        fn an_echo_reply_to_this_probe_is_the_destination() {
+            let mut v4 = vec![
+                0x45, 0, 0, 84, 0, 0, 0, 0, 64, 1, 0, 0, 8, 8, 8, 8, 10, 0, 0, 9,
+            ];
+            let mut reply = request(false, IDENT, SEQ);
+            reply[0] = ECHO_REPLY_V4;
+            v4.extend(&reply);
+            assert_eq!(answer(false, &v4, IDENT, SEQ), Some(Answer::Reached));
+            assert_eq!(
+                answer(false, &v4, IDENT ^ 1, SEQ),
+                None,
+                "someone else's ping"
+            );
+            assert_eq!(
+                answer(false, &v4, IDENT, SEQ + 1),
+                None,
+                "another probe of ours"
+            );
+
+            let mut v6 = request(true, IDENT, SEQ);
+            v6[0] = ECHO_REPLY_V6;
+            assert_eq!(answer(true, &v6, IDENT, SEQ), Some(Answer::Reached));
+            assert_eq!(answer(true, &v6, IDENT, SEQ + 1), None);
+        }
+
+        #[test]
+        fn a_router_that_quotes_this_probe_is_a_hop() {
+            assert_eq!(
+                answer(false, &v4_error(ICMP_TIME_EXCEEDED, IDENT, SEQ), IDENT, SEQ),
+                Some(Answer::Hop { terminal: false })
+            );
+            assert_eq!(
+                answer(false, &v4_error(ICMP_DEST_UNREACH, IDENT, SEQ), IDENT, SEQ),
+                Some(Answer::Hop { terminal: true })
+            );
+            assert_eq!(
+                answer(true, &v6_error(ICMP6_TIME_EXCEEDED, IDENT, SEQ), IDENT, SEQ),
+                Some(Answer::Hop { terminal: false })
+            );
+            assert_eq!(
+                answer(true, &v6_error(ICMP6_DST_UNREACH, IDENT, SEQ), IDENT, SEQ),
+                Some(Answer::Hop { terminal: true })
+            );
+        }
+
+        #[test]
+        fn an_error_about_another_packet_is_not_an_answer() {
+            assert_eq!(
+                answer(
+                    false,
+                    &v4_error(ICMP_TIME_EXCEEDED, IDENT ^ 1, SEQ),
+                    IDENT,
+                    SEQ
+                ),
+                None
+            );
+            assert_eq!(
+                answer(
+                    false,
+                    &v4_error(ICMP_TIME_EXCEEDED, IDENT, SEQ + 1),
+                    IDENT,
+                    SEQ
+                ),
+                None
+            );
+            assert_eq!(
+                answer(
+                    true,
+                    &v6_error(ICMP6_TIME_EXCEEDED, IDENT ^ 1, SEQ),
+                    IDENT,
+                    SEQ
+                ),
+                None
+            );
+            // Neither an error nor a reply: a redirect, or someone's echo request.
+            assert_eq!(answer(false, &v4_error(5, IDENT, SEQ), IDENT, SEQ), None);
+            let mut ping = vec![
+                0x45, 0, 0, 84, 0, 0, 0, 0, 64, 1, 0, 0, 10, 0, 0, 9, 8, 8, 8, 8,
+            ];
+            ping.extend(request(false, IDENT, SEQ));
+            assert_eq!(
+                answer(false, &ping, IDENT, SEQ),
+                None,
+                "an echo request is not an answer"
+            );
+        }
+
+        #[test]
+        fn truncated_or_empty_data_is_not_an_answer() {
+            for length in 0..v4_error(ICMP_TIME_EXCEEDED, IDENT, SEQ).len() {
+                let data = &v4_error(ICMP_TIME_EXCEEDED, IDENT, SEQ)[..length];
+                assert_eq!(answer(false, data, IDENT, SEQ), None, "{length} bytes");
+            }
+            for length in 0..v6_error(ICMP6_TIME_EXCEEDED, IDENT, SEQ).len() {
+                let data = &v6_error(ICMP6_TIME_EXCEEDED, IDENT, SEQ)[..length];
+                assert_eq!(answer(true, data, IDENT, SEQ), None, "{length} bytes");
+            }
+            // A header length that points past the data.
+            assert_eq!(answer(false, &[0x4f, 0, 0], IDENT, SEQ), None);
         }
     }
 }

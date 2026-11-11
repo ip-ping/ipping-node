@@ -2,6 +2,30 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## v0.8.1 (2026-11-11)
+
+Traceroute works where the node has only `CAP_NET_RAW`: an Alpine (or any) LXC container, or a host whose `net.ipv4.ping_group_range` leaves the
+node's group out. Not released yet.
+
+- **The gap**: ping tries an unprivileged ping socket and then a raw one, so a node with only `CAP_NET_RAW` (what the installer falls back to
+  when the group is outside `ping_group_range`) pinged. Traceroute only tried the ping socket, so such a node **never offered it**, said nothing,
+  and the site then told the visitor the nodes were "older and only know ping". Reproduced with the released node v0.8.0 and backend v0.11.0:
+  group inside the range: all kinds with traceroute; group outside, root with `CAP_NET_RAW`: ping but no traceroute.
+- **The fix**: when the ping socket is refused (`EACCES`/`EPERM`) the probe goes through a **raw ICMP socket**: an echo request built by hand
+  with a random identifier per probe (checksum added for ICMPv4; the kernel adds it for ICMPv6), `send_to` (a connected raw socket would
+  not hear the routers), and the receive filter set to the three ICMP types that can answer. Everything that arrives is looked at until one
+  answers *this* probe: an echo reply with our identifier and sequence number, or a time exceeded / unreachable whose quoted packet carries them.
+  A ping socket is still preferred whenever the kernel allows one. IPv4 and IPv6.
+- **Said out loud**: the connect line now lists what the node offers (`connected ipv4=true ipv6=false kinds=ping,tcp,http,tls,dns,traceroute`) and,
+  when traceroute is missing, a warning with the reason (`traceroute is not offered: no ICMP socket is allowed for this user: ...`).
+- **Tests**: 5 unit tests for the matching (RFC 1071's checksum, echo reply, errors for this probe and for another, truncated data), a
+  loopback test through a raw socket, and the network-namespace lab run a second time with **ping sockets refused**
+  (`TRACEROUTE_TEST_RAW=1`, a CI step): three real routers, IPv4 and IPv6, one round and several, with the test asserting the lab really
+  refuses ping sockets. On Alpine 3.21 (the static musl binary built as the release does): `ping_group_range` `1 0`, the node as an unprivileged
+  user with `cap_net_raw+ep` on the binary (what the installer does) enrolled against the released backend, offered all six kinds and traced
+  the route to 1.1.1.1 (hop 1 private, hop 2 reached, 5.4 ms), one round and three; the same without the capability offered four kinds and
+  logged why traceroute was missing. Not tried on an actual LXC host.
+
 ## v0.8.0 (2026-11-11)
 
 Released and verified: every file matches `SHA256SUMS` and carries an attestation (the glibc and the musl binaries, and the installer), and

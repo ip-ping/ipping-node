@@ -45,6 +45,8 @@ jobs:
           echo "TRACEROUTE_TEST_BIN=$bin" >> "$GITHUB_ENV"
       - name: Three routers, IPv4 and IPv6
         run: sudo env "TRACEROUTE_TEST_BIN=$TRACEROUTE_TEST_BIN" tests/netns/traceroute.sh
+      - name: The same with ping sockets refused (a raw socket is all that is left)
+        run: sudo env "TRACEROUTE_TEST_BIN=$TRACEROUTE_TEST_BIN" TRACEROUTE_TEST_RAW=1 tests/netns/traceroute.sh
 
   ipv6:
     name: IPv6 with global addresses (network namespaces)

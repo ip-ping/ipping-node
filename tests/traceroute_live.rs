@@ -14,7 +14,9 @@ use std::time::Duration;
 use ipping_node::policy::Policy;
 use ipping_node::probes::Prober;
 use ipping_node::probes::system::SystemProber;
-use ipping_node::probes::traceroute::{HopOutcome, available};
+use ipping_node::probes::traceroute::{
+    HopOutcome, available, probe_raw, raw_available, unprivileged_available,
+};
 use ipping_node::protocol::{Capabilities, ClientFrame, ResultStatus, SampleStatus, ServerFrame};
 use ipping_node::resolve::Resolve;
 use ipping_node::runner::Runner;
@@ -46,6 +48,40 @@ async fn on_loopback_the_destination_answers_at_once() {
         other => panic!("expected the destination to answer, got {other:?}"),
     }
     assert!(available(false));
+}
+
+/// A raw ICMP socket, which is what a node with only `CAP_NET_RAW` has (an LXC container whose
+/// `ping_group_range` cannot be changed), gets the same answer on loopback.
+#[tokio::test]
+async fn on_loopback_a_raw_socket_gets_the_answer_too() {
+    for address in ["127.0.0.1", "::1"] {
+        let ip: IpAddr = address.parse().unwrap();
+        if !raw_available(ip.is_ipv6()) {
+            eprintln!("skipped {address}: no CAP_NET_RAW");
+            continue;
+        }
+        if ip.is_ipv6() && std::net::UdpSocket::bind("[::1]:0").is_err() {
+            eprintln!("skipped {address}: this host has no IPv6 loopback");
+            continue;
+        }
+        let outcome =
+            tokio::task::spawn_blocking(move || probe_raw(ip, 1, 1, Duration::from_secs(2)))
+                .await
+                .unwrap();
+        match outcome {
+            HopOutcome::Reply {
+                from,
+                rtt,
+                reached,
+                terminal,
+            } => {
+                assert_eq!(from, ip);
+                assert!(reached && !terminal, "{address}");
+                assert!(rtt < Duration::from_secs(1), "{rtt:?}");
+            }
+            other => panic!("{address}: expected the destination to answer, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -137,6 +173,16 @@ fn lab() -> Option<(String, Vec<String>)> {
         eprintln!("skipped: run tests/netns/traceroute.sh as root to build the test network");
         return None;
     };
+    // `TRACEROUTE_TEST_RAW=1` in the script: the lab refuses ping sockets, so a pass means the raw
+    // socket did the work.
+    if std::env::var("IPPING_TRACE_RAW").is_ok_and(|value| !value.is_empty()) {
+        assert!(
+            !unprivileged_available(false),
+            "the lab was meant to refuse ping sockets"
+        );
+        assert!(raw_available(false), "and to allow raw ones");
+        assert!(available(false) && available(true));
+    }
     Some((destination, hops.split(',').map(str::to_string).collect()))
 }
 

@@ -157,6 +157,7 @@ async fn session(
     tracing::info!(
         ipv4 = capabilities.ipv4,
         ipv6 = capabilities.ipv6,
+        kinds = %capabilities.kinds.join(","),
         "connected"
     );
     let hello = ClientFrame::Hello {

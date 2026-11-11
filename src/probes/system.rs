@@ -34,6 +34,9 @@ impl SystemProber {
         capabilities.kinds.push("dns".into());
         if traceroute::available(false) || traceroute::available(true) {
             capabilities.kinds.push("traceroute".into());
+        } else if let Some(reason) = traceroute::why_unavailable() {
+            // Said once per connect, because a missing kind is otherwise a mystery to whoever runs the node.
+            tracing::warn!("traceroute is not offered: {reason}");
         }
         capabilities
     }
