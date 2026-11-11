@@ -5,7 +5,12 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 ## v0.8.1 (2026-11-11)
 
 Traceroute works where the node has only `CAP_NET_RAW`: an Alpine (or any) LXC container, or a host whose `net.ipv4.ping_group_range` leaves the
-node's group out. Not released yet.
+node's group out.
+
+Released and verified: every file (the glibc and musl binaries and the installer) matches `SHA256SUMS` and carries an attestation, and
+`ipping-node:0.8.1` is on Docker Hub. **The released arm64 musl binary** ran on Alpine 3.21 as an unprivileged user with `ping_group_range` `1 0` and
+only `cap_net_raw+ep` on the binary, enrolled against the released backend v0.11.0, offered `ping,tcp,http,tls,dns,traceroute` and traced the route to
+1.1.1.1 (hop 1 private, hop 2 reached), one round and three. The installer is unchanged in this release, so it was not run on a fresh machine.
 
 - **The gap**: ping tries an unprivileged ping socket and then a raw one, so a node with only `CAP_NET_RAW` (what the installer falls back to
   when the group is outside `ping_group_range`) pinged. Traceroute only tried the ping socket, so such a node **never offered it**, said nothing,
