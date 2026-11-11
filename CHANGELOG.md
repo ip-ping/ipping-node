@@ -4,6 +4,10 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 ## v0.8.0 (2026-11-11)
 
+Released and verified: every file matches `SHA256SUMS` and carries an attestation (the glibc and the musl binaries, and the installer), and
+the released image enrolled twice with one reusable key and **no name** against the released backend v0.10.0 (the backend called the
+nodes `Sydney, AU` and `Frankfurt, DE` after the country and city they gave).
+
 A node needs no name. It no longer sends its host name when none is given, and the installer's question is optional.
 
 - `ipping-node enroll` sends an empty name when `--name` / `IPPING_NODE_NAME` is not set (it used to send `HOSTNAME`, `/etc/hostname`
