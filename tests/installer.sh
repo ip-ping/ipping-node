@@ -21,6 +21,30 @@ check "no output other than ours, no exit" "sourced" "$out"
 . "$SCRIPT"
 set +e +u +o pipefail
 
+echo "versions are compared by number, not by letters"
+check "0.8.0 is older than 0.8.1" yes "$(version_older 0.8.0 0.8.1 && echo yes || echo no)"
+check "0.8.1 is not older than 0.8.1" no "$(version_older 0.8.1 0.8.1 && echo yes || echo no)"
+check "0.10.0 is not older than 0.8.1 (10 is more than 8)" no "$(version_older 0.10.0 0.8.1 && echo yes || echo no)"
+check "0.7.2 is older than 0.8.1" yes "$(version_older 0.7.2 0.8.1 && echo yes || echo no)"
+check "a leading v is ignored" yes "$(version_older v0.8.0 v0.8.1 && echo yes || echo no)"
+check "1.0 is not older than 0.8.1 (missing parts are 0)" no "$(version_older 1.0 0.8.1 && echo yes || echo no)"
+
+echo "doctor says what a host that allows only CAP_NET_RAW gives the node"
+note() { printf '%s\n' "$*"; }
+installed_mode() { echo direct; }
+node_version() { echo "0.8.0"; }
+out="$(raw_only_note)"
+case "$out" in *"offers ping but not traceroute"*"update"*) r=warns ;; *) r="$out" ;; esac
+check "a node older than 0.8.1 is told traceroute is missing, and to update" warns "$r"
+node_version() { echo "0.8.1"; }
+out="$(raw_only_note)"
+case "$out" in *"every kind"*) r=ok ;; *) r="$out" ;; esac
+check "a node of 0.8.1 or newer is told it offers every kind" ok "$r"
+node_version() { echo ""; }
+out="$(raw_only_note)"
+case "$out" in *"every kind"*) r=ok ;; *) r="$out" ;; esac
+check "a version that cannot be read is not accused of anything" ok "$r"
+
 echo "approval is read from the site, not only from the node's log"
 node_id() { echo "abc123"; }
 node_server() { echo "https://ping.example.com/"; }

@@ -965,6 +965,22 @@ node_running() {
   esac
 }
 
+# True when version $1 is older than $2 (like 0.8.1; a leading v is ignored). Missing parts count as 0.
+version_older() {
+  awk -v a="${1#v}" -v b="${2#v}" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); for (i = 1; i <= 3; i++) { if (x[i] + 0 < y[i] + 0) exit 0; if (x[i] + 0 > y[i] + 0) exit 1 } exit 1 }'
+}
+
+# What a host that allows only CAP_NET_RAW gives the node: ping always, traceroute from 0.8.1 (before that it needed a ping socket).
+raw_only_note() {
+  local version
+  version="$(node_version)"
+  if [ -n "$version" ] && version_older "$version" 0.8.1; then
+    note "   this node is ${version}: with CAP_NET_RAW alone it offers ping but not traceroute (0.8.1 and newer do). Update it: sudo bash $0 update"
+  else
+    note "   with CAP_NET_RAW alone the node pings and traces routes through raw sockets: it offers every kind"
+  fi
+}
+
 node_version() {
   case "$(installed_mode)" in
     direct) "${APP_DIR}/current/ipping-node" --version 2>/dev/null | awk '{ print $2 }' ;;
@@ -1068,11 +1084,13 @@ cmd_doctor() {
     check "the state directory belongs to ${RUN_USER}" "sudo chown -R ${RUN_USER}: ${STATE_DIR}" bash -c "[ -z \"\$(find '${STATE_DIR}' ! -user '${RUN_USER}' 2>/dev/null | head -n 1)\" ]"
     check "the credential file is private (mode 600)" "sudo chmod 600 ${STATE_DIR}/credential" bash -c "[ \"\$(stat -c %a '${STATE_DIR}/credential')\" = 600 ]"
     if service_group_can_ping; then
-      check "unprivileged ICMP is allowed (ping_group_range)" "" true
+      check "unprivileged ICMP is allowed (ping_group_range): ping and traceroute work" "" true
     elif [ "$(init_system)" = openrc ]; then
       check "the binary has CAP_NET_RAW for ICMP" "run update, or reinstall the node" bash -c "getcap '${APP_DIR}/current/ipping-node' 2>/dev/null | grep -qi cap_net_raw"
+      raw_only_note
     else
       check "the service has CAP_NET_RAW for ICMP" "reinstall the node" grep -q CAP_NET_RAW "$UNIT_FILE"
+      raw_only_note
     fi
   fi
   step "The site"

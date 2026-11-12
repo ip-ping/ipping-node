@@ -2,6 +2,19 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
+## Unreleased
+
+The installer's `doctor` says what a host that allows only `CAP_NET_RAW` gives the node. The binary is unchanged.
+
+- Before, `doctor` passed "the service has CAP_NET_RAW for ICMP" (the fallback of an LXC container or of a host whose `net.ipv4.ping_group_range` leaves
+  the node's group out) and said nothing about what that means for the checks. It now says what it gives: **a node of 0.8.1 or newer pings and traces
+  routes through raw sockets, so it offers every kind; an older one pings but does not offer traceroute**, with the command that updates it. The
+  unprivileged case says that ping and traceroute work.
+- `version_older`, a comparison by number (`0.10.0` is newer than `0.8.1`) in awk, which every host the installer runs on has.
+- Tests in `tests/installer.sh`: the comparison (including the `0.10.0` and missing-part cases) and the three notes; the threshold was moved in turn
+  and the test failed. ShellCheck is clean with `stable` and `v0.10.0`. Not tried on a real LXC host (the lab and Alpine with `ping_group_range` `1 0` are what
+  there is).
+
 ## v0.8.1 (2026-11-11)
 
 Traceroute works where the node has only `CAP_NET_RAW`: an Alpine (or any) LXC container, or a host whose `net.ipv4.ping_group_range` leaves the

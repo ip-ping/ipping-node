@@ -168,7 +168,8 @@ IPv6, so such a node reports IPv4 only; use host or an IPv6-enabled network to m
 ## Troubleshooting
 
 `sudo bash ipping-node.sh doctor` checks the service, the state directory, the credential, ICMP
-permission and that the site answers, and says what to try for each failing check. `status` tells
+permission (and what it gives the node: with `CAP_NET_RAW` alone a node of 0.8.1 or newer offers every kind, an older one does not offer traceroute) and that
+the site answers, and says what to try for each failing check. `status` tells
 you whether the site has approved the node. Common cases:
 
 * **`cannot read ...: Permission denied`**: the state files belong to another account (for example
@@ -243,6 +244,7 @@ Small steps, each one committed and logged in [CHANGELOG.md](CHANGELOG.md).
 - [x] HTTP checks (timings, TLS certificate, redirects)
 - [x] Traceroute (Linux; tested through real routers in network namespaces, IPv4 and IPv6)
 - [x] Traceroute through a raw socket where only `CAP_NET_RAW` is allowed (an LXC container), tested in the same lab with ping sockets refused, and on Alpine as an unprivileged user with the file capability (v0.8.1)
+- [x] The installer's `doctor` says what a `CAP_NET_RAW`-only host gives the node (every kind from v0.8.1; an older node pings but does not offer traceroute) and how to update
 - [x] Tagged releases: v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.5.1, v0.6.0 (with v0.3.1 to v0.3.3 between: faster reconnect after a site update, approval status read from the site, `--insecure`, state ownership repair, narrow terminals)
 - [x] Every kind over IPv6 with global addresses and the real policy, in a network-namespace lab (node CI); see the node README for what that does and does not prove
 - [ ] Over the real public IPv6 internet (needs a host with IPv6 connectivity; neither the development machine nor CI runners have it)
