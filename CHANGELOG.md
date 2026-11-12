@@ -6,6 +6,12 @@ Progress log for `ipping-node`, newest first. Each entry is one small, tested st
 
 The installer's `doctor` says what a host that allows only `CAP_NET_RAW` gives the node. The binary is unchanged.
 
+Released and verified: every file (the four binaries and the installer) matches `SHA256SUMS` and carries an attestation (an installer altered after release is refused) and
+`ipping-node:0.8.2` is on Docker Hub for amd64 and arm64. **The released installer was run on a fresh Debian 13 systemd container** with `net.ipv4.ping_group_range` set to `1 0`
+(the node's group outside it) against the released backend v0.14.0: it chose `CAP_NET_RAW` for the service, `doctor` passed with "with CAP_NET_RAW alone the node pings and traces
+routes through raw sockets: it offers every kind", and the node's own log said `kinds=ping,tcp,http,tls,dns,traceroute`. With the range opened again `doctor` said "unprivileged ICMP
+is allowed (ping_group_range): ping and traceroute work". Not run: the note for a node older than 0.8.1 (only the test of the comparison), Alpine with the released installer, a real LXC host.
+
 - Before, `doctor` passed "the service has CAP_NET_RAW for ICMP" (the fallback of an LXC container or of a host whose `net.ipv4.ping_group_range` leaves
   the node's group out) and said nothing about what that means for the checks. It now says what it gives: **a node of 0.8.1 or newer pings and traces
   routes through raw sockets, so it offers every kind; an older one pings but does not offer traceroute**, with the command that updates it. The
