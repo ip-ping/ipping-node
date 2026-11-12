@@ -5,7 +5,7 @@ A node is a small Rust program: it connects *out* to the backend, receives typed
 shell commands), checks them against its own safety policy, runs bounded probes (**ping, TCP
 connect, HTTP request, traceroute, DNS lookup, certificate check**) and reports structured results.
 
-Current release: **v0.8.1**. It works with any backend for ping; TCP, HTTP and traceroute need backend
+Current release: **v0.8.2**. It works with any backend for ping; TCP, HTTP and traceroute need backend
 **v0.3.0** or newer, DNS checks need backend **v0.4.0**, traceroute rounds and certificate checks need backend **v0.5.0**, and DNS over HTTPS and QUIC need backend **v0.6.0** (DNS over HTTPS to Quad9, **v0.7.0**). Binaries are published for Linux `amd64` and `arm64` (built against
 glibc 2.31, so they run on Debian 11 and newer), plus a distroless Docker image.
 

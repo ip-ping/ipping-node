@@ -2,7 +2,7 @@
 
 Progress log for `ipping-node`, newest first. Each entry is one small, tested step.
 
-## Unreleased
+## v0.8.2 (2026-11-12)
 
 The installer's `doctor` says what a host that allows only `CAP_NET_RAW` gives the node. The binary is unchanged.
 
